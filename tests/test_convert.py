@@ -136,7 +136,10 @@ def main() -> int:
         ("not a zip", lambda: u.convert(md, b"hello world", "t.pptx", None)),
         ("empty markdown", lambda: u.convert("   ", tpl, "t.pptx", None)),
         ("bad yaml", lambda: u.convert(md, tpl, "t.pptx", "layouts: [oops")),
-        ("scalar yaml", lambda: u.convert(md, tpl, "t.pptx", "just a string")),
+        # コロンを含むのでマッピングを書こうとした形跡がある = 握りつぶさない
+        ("list yaml", lambda: u.convert(md, tpl, "t.pptx", "- layouts: 本文")),
+        ("multi-line scalar",
+         lambda: u.convert(md, tpl, "t.pptx", "設定を書き忘れました\nここには何もありません\n")),
     ]:
         try:
             fn()
@@ -250,6 +253,19 @@ def main() -> int:
             check(f"markdown_text={sentinel!r} は空扱い", False, "(no exception)")
         except u.Md2pptError:
             check(f"markdown_text={sentinel!r} は空扱い", True)
+
+    print("[14b] 安全弁: コロンも改行も無い単一トークンは未入力扱い")
+    # 番兵値の列挙に無い未知の文字列が届いても変換を止めない
+    for token in ["None", "undefined", "xyzzy", "設定なし", "false", "0", "[]"]:
+        try:
+            rt = u.convert(md, tpl, "t.pptx", token)
+            ok = not rt["warnings"] and rt["slide_count"] == 13
+        except Exception as e:
+            ok = False
+            print(f"       {token!r} -> {type(e).__name__}: {e}")
+        check(f"config_yaml={token!r} は未入力扱い", ok)
+    check("コロンがあれば握りつぶさない",
+          u.parse_config_yaml("layouts: {content: 本文}") == {"layouts": {"content": "本文"}})
 
     print("[15] 全角文字は具体的に指摘される")
     # 全角コロンは YAML の構文エラーにならず、設定全体がただの文字列になる

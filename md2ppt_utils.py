@@ -186,6 +186,12 @@ def parse_config_yaml(config_yaml: Any) -> dict:
     text = text_param(config_yaml)
     if not text:
         return {}
+    # 設定として成立する最低条件はコロンを含むこと。コロンも改行も無い単一
+    # トークンは設定になりえないので未入力として扱う。_UNSET_TEXT の列挙だけでは
+    # Dify が未入力欄に別の文字列を入れて送ってきたときにまた止まってしまう。
+    # 全角コロンはここで握りつぶさず、下の _fullwidth_hint による指摘へ回す。
+    if "\n" not in text and ":" not in text and "：" not in text:
+        return {}
 
     try:
         data = yaml.safe_load(text)

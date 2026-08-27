@@ -26,3 +26,6 @@ tests/out/
 
 # 変換ロジックの取り込み元。プラグイン本体には同梱しない（.difyignore も参照）
 sample/
+
+# Claude Code のローカル設定（マシン固有・共有しない）
+.claude/settings.local.json
