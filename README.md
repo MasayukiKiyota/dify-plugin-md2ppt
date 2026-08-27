@@ -1,6 +1,6 @@
 # Markdown to PowerPoint
 
-**Author:** j-ainnovation
+**Author:** masayukikiyota
 **Version:** 0.0.1
 **Type:** Tool
 
