@@ -190,6 +190,44 @@ def main() -> int:
           str(j3["slide_count"]))
     check("blob still returned", len(by_type(msgs, BLOB)) == 1)
 
+    print("[8c] Dify が未入力欄に 'None' を入れて送っても通る（報告された不具合の再現）")
+    msgs = run(MdToPptxTool, {
+        "markdown_text": SAMPLE_MD,
+        "markdown_file": "",
+        "template_file": tpl_file,
+        "config_yaml": "None",      # <- これが変換全体を止めていた
+        "file_name": "None",
+    })
+    j4 = payload(by_type(msgs, JSON)[0])
+    check("変換が成功する", j4["success"] is True, str(j4.get("error")))
+    check("警告なし", j4["warnings"] == [], str(j4["warnings"]))
+    check("None.pptx にならない", j4["file_name"] == "presentation.pptx",
+          j4["file_name"])
+    check("blob が返る", len(by_type(msgs, BLOB)) == 1)
+
+    print("[8d] 'None' の markdown_text はファイル入力を邪魔しない")
+    msgs = run(MdToPptxTool, {
+        "markdown_text": "None",
+        "markdown_file": FakeFile(
+            "---\ntitle: ファイル入力\n---\n\n## 中身\n\n- ok\n".encode("utf-8"),
+            "in.md",
+        ),
+        "template_file": tpl_file,
+    })
+    j5 = payload(by_type(msgs, JSON)[0])
+    check("誤警告が出ない", j5["warnings"] == [], str(j5["warnings"]))
+    check("ファイルの内容が使われる", j5["meta"].get("title") == "ファイル入力",
+          str(j5["meta"]))
+
+    print("[8e] emit_config に文字列の 'false' が届いても false として扱う")
+    msgs = run(InspectTemplateTool, {"template_file": tpl_file,
+                                     "emit_config": "false"})
+    check("config blob を返さない", not by_type(msgs, BLOB))
+    check("config_yaml は null", payload(by_type(msgs, JSON)[0])["config_yaml"] is None)
+    msgs = run(InspectTemplateTool, {"template_file": tpl_file,
+                                     "emit_config": "true"})
+    check("文字列 'true' は有効", len(by_type(msgs, BLOB)) == 1)
+
     print("[9] inspect_template: missing file is a clean error")
     msgs = run(InspectTemplateTool, {})
     check("no blob", not by_type(msgs, BLOB))

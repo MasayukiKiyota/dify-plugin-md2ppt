@@ -12,6 +12,7 @@ from md2ppt_utils import (
     file_bytes,
     file_name_of,
     read_markdown,
+    text_param,
 )
 
 
@@ -26,7 +27,7 @@ class MdToPptxTool(Tool):
             markdown, used_file = read_markdown(
                 tool_parameters.get("markdown_text"), markdown_file
             )
-            if used_file and (tool_parameters.get("markdown_text") or "").strip():
+            if used_file and text_param(tool_parameters.get("markdown_text")):
                 notices.append(
                     "Markdown テキストと Markdown ファイルの両方が指定されたため、"
                     "ファイルの内容を使用しました。"

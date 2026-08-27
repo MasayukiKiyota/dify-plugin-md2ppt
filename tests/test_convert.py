@@ -166,8 +166,9 @@ def main() -> int:
     check("ensure_pptx falls back", u.ensure_pptx("  ") == "presentation.pptx")
     check("decode cp932", u.decode_text("日本語".encode("cp932")) == "日本語")
     check("decode utf-8 BOM", u.decode_text("# あ".encode("utf-8-sig")) == "# あ")
-    text, used = u.read_markdown("# a\r\nb\r\n", None)
-    check("CRLF normalized", text == "# a\nb\n", repr(text))
+    # text_param が前後の空白を落とすので、末尾の改行は残らない
+    text, used = u.read_markdown("  # a\r\nb\r\n  ", None)
+    check("CRLF normalized", text == "# a\nb", repr(text))
     check("used_file False for text", used is False)
 
     class FakeFile:
@@ -228,6 +229,83 @@ def main() -> int:
           str(det["layouts"]))
     check("body placeholder idx detected", det["placeholders"]["body"] == 1,
           str(det["placeholders"]))
+
+    print("[14] 未入力の任意パラメータが番兵値で届いても未指定として扱う")
+    # Dify は未入力の任意パラメータを str(None) 経由で "None" として送ってくることがある。
+    for sentinel in ["None", "none", "NONE", "null", "~", "undefined", "nil",
+                     "-", "", "   ", None]:
+        try:
+            rs = u.convert(md, tpl, "t.pptx", sentinel)
+            ok = not rs["warnings"] and rs["slide_count"] == 13
+        except Exception as e:
+            ok = False
+            print(f"       {sentinel!r} -> {type(e).__name__}: {e}")
+        check(f"config_yaml={sentinel!r} は未指定扱い", ok)
+    check("ensure_pptx('None') が None.pptx にならない",
+          u.ensure_pptx("None") == "presentation.pptx", u.ensure_pptx("None"))
+    check("ensure_pptx('-') も既定名", u.ensure_pptx("-") == "presentation.pptx")
+    for sentinel in ["None", "null", "-"]:
+        try:
+            u.read_markdown(sentinel, None)
+            check(f"markdown_text={sentinel!r} は空扱い", False, "(no exception)")
+        except u.Md2pptError:
+            check(f"markdown_text={sentinel!r} は空扱い", True)
+
+    print("[15] 全角文字は具体的に指摘される")
+    # 全角コロンは YAML の構文エラーにならず、設定全体がただの文字列になる
+    fullwidth_colon = """layouts：
+  content："本文"
+"""
+    # 全角スペース字下げは {'layouts': None, '　　content': ...} を作ってしまう
+    fullwidth_space = """layouts:
+　　content: "本文"
+"""
+    for label, bad, want in [("全角コロン", fullwidth_colon, "全角コロン"),
+                             ("全角スペース", fullwidth_space, "全角スペース")]:
+        try:
+            u.convert(md, tpl, "t.pptx", bad)
+            check(f"{label}を指摘", False, "(no exception)")
+        except u.Md2pptError as e:
+            check(f"{label}を指摘", want in str(e), str(e))
+            print(f"       -> {e}")
+
+    print("[16] bool_param は文字列の真偽値を正しく解釈する")
+    for value, expected in [("false", False), ("False", False), ("true", True),
+                            ("True", True), ("0", False), ("1", True),
+                            ("None", False), ("", False), (None, False),
+                            (False, False), (True, True), ("off", False)]:
+        check(f"bool_param({value!r}) is {expected}",
+              u.bool_param(value) is expected, str(u.bool_param(value)))
+
+    print("[17] 設定の形がおかしいときは分かりやすく落ちる")
+    unknown_key = """layout:
+  content: "本文"
+"""
+    scalar_section = """layouts: 本文
+"""
+    null_section = """layouts:
+placeholders:
+  body: 1
+"""
+    for label, bad in [("不明なトップレベルキー", unknown_key),
+                       ("セクションがマッピングでない", scalar_section),
+                       ("セクションが null", null_section)]:
+        try:
+            u.convert(md, tpl, "t.pptx", bad)
+            check(f"{label} はエラー", False, "(no exception)")
+        except u.Md2pptError as e:
+            check(f"{label} はエラー", True)
+            print(f"       -> {e}")
+
+    with_template = """template: foo.pptx
+layouts:
+  content: "本文"
+"""
+    check("template キーは黙って無視される",
+          u.parse_config_yaml(with_template)
+          == {"template": "foo.pptx", "layouts": {"content": "本文"}})
+    check("template キーがあっても変換できる",
+          u.convert(md, tpl, "t.pptx", with_template)["warnings"] == [])
 
     print()
     if failures:

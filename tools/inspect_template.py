@@ -8,6 +8,7 @@ from md2ppt_utils import (
     YAML_MIME,
     Md2pptError,
     analyze_template,
+    bool_param,
     config_to_yaml,
     detect_config,
     file_bytes,
@@ -20,7 +21,7 @@ class InspectTemplateTool(Tool):
     def _invoke(
         self, tool_parameters: dict[str, Any]
     ) -> Generator[ToolInvokeMessage, None, None]:
-        emit_config = bool(tool_parameters.get("emit_config", False))
+        emit_config = bool_param(tool_parameters.get("emit_config"))
 
         try:
             template = tool_parameters.get("template_file")

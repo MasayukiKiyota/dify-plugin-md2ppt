@@ -46,6 +46,7 @@ parameters:
   - name: config_yaml
     type: string
     required: false
+    default: ""
     label:
       en_US: Mapping config (YAML)
       ja_JP: マッピング設定（YAML）

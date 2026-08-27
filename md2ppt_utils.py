@@ -45,6 +45,50 @@ class Md2pptError(Exception):
 # 入力パラメータの取り出し（SDK 非依存）
 # ════════════════════════════════════════════════════════════════════════
 
+# Dify が未入力の任意パラメータに入れて送ってくることがある番兵値。
+# SDK は値を一切加工せず素通しするため、サーバ側の str(None) が
+# そのまま文字列 "None" として届く。YAML の null キーワード（null / ~）は
+# safe_load が None にしてくれるが、"None" はただの文字列として通ってしまう。
+_UNSET_TEXT = frozenset({"none", "null", "nil", "undefined", "~", "-"})
+
+_TRUE_TEXT = frozenset({"true", "yes", "on", "1"})
+_FALSE_TEXT = frozenset({"false", "no", "off", "0", "none", "null", ""})
+
+
+def text_param(value: Any) -> str:
+    """任意の文字列パラメータを正規化する。未入力は "" にする。
+
+    これらの番兵値を意味のある入力として扱う利用者は想定できないため、
+    未入力とみなして握りつぶすほうが実害が小さい。
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    text = value.strip()
+    return "" if text.lower() in _UNSET_TEXT else text
+
+
+def bool_param(value: Any, default: bool = False) -> bool:
+    """真偽パラメータを正規化する。
+
+    bool("false") が True になる罠を避ける。Dify が真偽値を文字列で
+    送ってきても意図どおりに解釈する。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUE_TEXT:
+            return True
+        if low in _FALSE_TEXT:
+            return False
+        return default
+    return bool(value)
+
+
 def file_bytes(param: Any) -> bytes | None:
     """dify_plugin の File / dict / bytes からファイル内容を取り出す。"""
     if param is None or param == "":
@@ -86,14 +130,14 @@ def decode_text(data: bytes) -> str:
     )
 
 
-def read_markdown(text_param: Any, file_param: Any) -> tuple[str, bool]:
+def read_markdown(text_value: Any, file_value: Any) -> tuple[str, bool]:
     """Markdown 本文と、ファイル入力を採用したかどうかを返す。"""
-    data = file_bytes(file_param)
+    data = file_bytes(file_value)
     if data is not None:
         text = decode_text(data)
         used_file = True
     else:
-        text = text_param if isinstance(text_param, str) else (str(text_param or ""))
+        text = text_param(text_value)
         used_file = False
     if not text.strip():
         raise Md2pptError(
@@ -102,9 +146,9 @@ def read_markdown(text_param: Any, file_param: Any) -> tuple[str, bool]:
     return text.replace("\r\n", "\n").replace("\r", "\n"), used_file
 
 
-def ensure_pptx(name: str | None) -> str:
+def ensure_pptx(name: Any) -> str:
     """出力ファイル名を安全な .pptx 名に整える。"""
-    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", (name or "").strip()).strip(". ")
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", text_param(name)).strip(". ")
     if not cleaned:
         cleaned = "presentation"
     return cleaned if cleaned.lower().endswith(".pptx") else f"{cleaned}.pptx"
@@ -114,19 +158,77 @@ def ensure_pptx(name: str | None) -> str:
 # 設定
 # ════════════════════════════════════════════════════════════════════════
 
-def parse_config_yaml(config_yaml: str | None) -> dict:
+# DEFAULT_CONFIG のトップレベルキーのうち、マッピングを期待するもの。
+_CONFIG_SECTIONS = (
+    "layouts", "placeholders", "body_area", "fonts", "sizes", "colors",
+    "table", "quote", "image", "spacing", "options",
+)
+# テンプレートは毎回アップロードするので、config 側の指定は黙って無視する。
+_CONFIG_IGNORED = ("template",)
+
+
+def _fullwidth_hint(text: str) -> str:
+    """日本語環境でありがちな全角文字の混入を具体的に指摘する。"""
+    if "：" in text:
+        return "（全角コロン「：」が含まれています。半角の「:」にしてください）"
+    if "　" in text:
+        return "（全角スペースが含まれています。字下げは半角スペースにしてください）"
+    return ""
+
+
+def parse_config_yaml(config_yaml: Any) -> dict:
     """config_yaml パラメータを辞書にする。未指定なら空の辞書。"""
-    if not config_yaml or not config_yaml.strip():
+    if isinstance(config_yaml, dict):
+        return config_yaml          # 既に辞書ならそのまま使う
+    if isinstance(config_yaml, (bytes, bytearray)):
+        config_yaml = decode_text(bytes(config_yaml))
+
+    text = text_param(config_yaml)
+    if not text:
         return {}
+
     try:
-        data = yaml.safe_load(config_yaml)
+        data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise Md2pptError(f"config_yaml を解釈できません: {e}") from None
+        raise Md2pptError(
+            f"config_yaml を解釈できません{_fullwidth_hint(text)}: {e}"
+        ) from None
     if data is None:
         return {}
     if not isinstance(data, dict):
-        raise Md2pptError("config_yaml はマッピング（key: value）の形式で記述してください。")
+        raise Md2pptError(
+            "config_yaml は 'layouts:' のようなマッピング（key: value）で"
+            f"記述してください{_fullwidth_hint(text)}。"
+            f"受け取った値（{type(data).__name__}）: {text[:80]!r}"
+        )
+
+    _validate_config(data, text)
     return data
+
+
+def _validate_config(data: dict, text: str) -> None:
+    """後段で分かりにくく失敗する前に、設定の形を確かめる。"""
+    unknown = [
+        k for k in data
+        if k not in _CONFIG_SECTIONS and k not in _CONFIG_IGNORED
+    ]
+    if unknown:
+        # 全角スペースで字下げすると、その行がトップレベルの
+        # 「　　content」のようなキーとして拾われる。
+        raise Md2pptError(
+            f"config_yaml に不明なキーがあります: {', '.join(map(str, unknown))}"
+            f"{_fullwidth_hint(text)}。"
+            f"指定できるのは {', '.join(_CONFIG_SECTIONS)} です。"
+        )
+    for key in _CONFIG_SECTIONS:
+        if key in data and not isinstance(data[key], dict):
+            # 全角スペースで字下げすると {'layouts': None, '　　content': ...} になり、
+            # そのまま進むと Renderer.layout() で AttributeError になる。
+            raise Md2pptError(
+                f"config_yaml の '{key}' はマッピング（key: value）で"
+                f"記述してください{_fullwidth_hint(text)}。"
+                f"受け取った値（{type(data[key]).__name__}）: {str(data[key])[:60]!r}"
+            )
 
 
 def build_config(config_yaml: str | None, detected: dict | None = None) -> dict:
