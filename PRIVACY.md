@@ -47,7 +47,7 @@ Markdown 内に `http(s)://` の画像 URL が含まれていても、取得は�
 
 ## Contact Information
 
-このプラグインに関するお問い合わせは、提供元（j-ainnovation）までご連絡ください。
+このプラグインに関するお問い合わせは、提供元（masayukikiyota）までご連絡ください。
 
 ## Changes to This Policy
 

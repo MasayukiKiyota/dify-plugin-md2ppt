@@ -9,10 +9,10 @@ from md2ppt_utils import (
     Md2pptError,
     analyze_template,
     config_to_yaml,
+    detect_config,
     file_bytes,
     file_name_of,
     format_template_report,
-    suggest_config,
 )
 
 
@@ -50,7 +50,7 @@ class InspectTemplateTool(Tool):
         suggested = None
         config_yaml = None
         if emit_config:
-            suggested = suggest_config(info)
+            suggested = detect_config(info)
             config_yaml = config_to_yaml(suggested, info["template_name"])
             report = f"{report}\n{config_yaml}"
 

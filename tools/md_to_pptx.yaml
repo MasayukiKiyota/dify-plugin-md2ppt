@@ -1,6 +1,6 @@
 identity:
   name: md_to_pptx
-  author: j-ainnovation
+  author: masayukikiyota
   label:
     en_US: Markdown to PowerPoint
     ja_JP: Markdown を PowerPoint に変換
@@ -8,7 +8,7 @@ description:
   human:
     en_US: Convert Markdown into a .pptx deck using an uploaded PowerPoint template.
     ja_JP: アップロードした PowerPoint テンプレートを使って Markdown を .pptx に変換します。
-  llm: Converts Markdown into a PowerPoint (.pptx) presentation and returns it as a downloadable file. A PowerPoint template (.pptx or .potx) must be supplied - its layouts, theme colors and fonts are reused for the generated deck. The Markdown is mapped to slides as follows - YAML front matter with a title becomes the cover slide, a level-1 heading becomes a section divider slide, a level-2 heading starts a new slide, and level-3/4 headings become in-slide headings. Bullet lists (up to 5 levels), ordered lists, tables with column alignment, fenced code blocks, block quotes, horizontal rules, images and inline bold/italic/code/strikethrough/links are all supported. Returns metadata plus the .pptx file itself.
+  llm: Converts Markdown into a PowerPoint (.pptx) presentation and returns it as a downloadable file. A PowerPoint template (.pptx or .potx) must be supplied - its layouts, theme colors and fonts are reused for the generated deck, and the layout to use for each kind of slide is detected automatically so no configuration is normally required. The Markdown is mapped to slides as follows - YAML front matter with a title becomes the cover slide, a level-1 heading becomes a section divider slide, a level-2 heading starts a new slide, and level-3/4 headings become in-slide headings. Bullet lists (up to 5 levels), ordered lists, tables with column alignment, fenced code blocks, block quotes, horizontal rules, images and inline bold/italic/code/strikethrough/links are all supported. Returns metadata plus the .pptx file itself.
 parameters:
   - name: markdown_text
     type: string
@@ -39,9 +39,9 @@ parameters:
       en_US: PowerPoint template
       ja_JP: PowerPoint テンプレート
     human_description:
-      en_US: The .pptx or .potx template whose layouts, theme and fonts are used. Run the "Inspect PowerPoint template" tool first to find its layout names.
-      ja_JP: レイアウト・テーマ・フォントを流用する .pptx / .potx。レイアウト名は「PowerPoint テンプレート解析」ツールで確認できます。
-    llm_description: The PowerPoint template file (.pptx or .potx) to base the deck on. This is required. If its layout names differ from the defaults, map them via config_yaml.
+      en_US: The .pptx or .potx template whose layouts, theme and fonts are used. The right layouts are detected automatically, so no configuration is normally needed.
+      ja_JP: レイアウト・テーマ・フォントを流用する .pptx / .potx。使うレイアウトは自動判定されるため、通常は設定不要です。
+    llm_description: The PowerPoint template file (.pptx or .potx) to base the deck on. This is required. The layouts to use for the cover, section dividers, content slides and so on are detected automatically from the template, so no further configuration is needed in the normal case.
     form: llm
   - name: config_yaml
     type: string
@@ -50,9 +50,9 @@ parameters:
       en_US: Mapping config (YAML)
       ja_JP: マッピング設定（YAML）
     human_description:
-      en_US: Optional YAML that maps Markdown elements to the template's layout names, and overrides fonts, sizes, colors and options. Generate a starting point with the "Inspect PowerPoint template" tool.
-      ja_JP: Markdown 要素をテンプレートのレイアウト名に対応づける YAML。フォント・サイズ・色・オプションも上書きできます。雛形は「PowerPoint テンプレート解析」ツールで生成できます。
-    llm_description: Optional YAML configuration mapping Markdown constructs to the template's layout names (keys - layouts, placeholders, fonts, sizes, colors, table, quote, image, spacing, options). Leave empty to use the defaults.
+      en_US: Usually unnecessary - the layouts are detected automatically. Use this only to override the detection, or to change fonts, sizes, colors and options. Anything you leave out keeps its auto-detected or default value.
+      ja_JP: 通常は不要です（レイアウトは自動判定されます）。判定結果を上書きしたい場合や、フォント・サイズ・色・オプションを変えたい場合にのみ指定します。書かなかった項目は自動判定値・既定値のままです。
+    llm_description: Optional YAML configuration. Normally omit it - the layouts are auto-detected from the template. Supply it only to override the detection or to change presentation settings (keys - layouts, placeholders, fonts, sizes, colors, table, quote, image, spacing, options). Values given here always win over the auto-detected ones; omitted keys keep their auto-detected or default value.
     form: form
   - name: file_name
     type: string
@@ -93,6 +93,9 @@ output_schema:
     meta:
       type: object
       description: Front matter values picked up from the Markdown (title, subtitle, author, date).
+    layouts_used:
+      type: object
+      description: The template layout name actually used for each slide kind (title, section, content, table, blank). These are auto-detected from the template unless config_yaml overrides them.
     outline:
       type: string
       description: Human-readable list of the generated slides.

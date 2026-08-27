@@ -114,19 +114,34 @@ def ensure_pptx(name: str | None) -> str:
 # 設定
 # ════════════════════════════════════════════════════════════════════════
 
-def build_config(config_yaml: str | None) -> dict:
-    """YAML 文字列を DEFAULT_CONFIG にマージする。core.load_config のパス版。"""
+def parse_config_yaml(config_yaml: str | None) -> dict:
+    """config_yaml パラメータを辞書にする。未指定なら空の辞書。"""
     if not config_yaml or not config_yaml.strip():
-        return copy.deepcopy(core.DEFAULT_CONFIG)
+        return {}
     try:
         data = yaml.safe_load(config_yaml)
     except yaml.YAMLError as e:
         raise Md2pptError(f"config_yaml を解釈できません: {e}") from None
     if data is None:
-        return copy.deepcopy(core.DEFAULT_CONFIG)
+        return {}
     if not isinstance(data, dict):
         raise Md2pptError("config_yaml はマッピング（key: value）の形式で記述してください。")
-    return core.deep_merge(core.DEFAULT_CONFIG, data)
+    return data
+
+
+def build_config(config_yaml: str | None, detected: dict | None = None) -> dict:
+    """設定を組み立てる。
+
+    優先順位は DEFAULT_CONFIG < detected（テンプレートからの自動判定） < config_yaml。
+    利用者が明示した項目は常に勝つので、自動判定が邪魔をすることはない。
+    """
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    if detected:
+        cfg = core.deep_merge(cfg, detected)
+    user = parse_config_yaml(config_yaml)
+    if user:
+        cfg = core.deep_merge(cfg, user)
+    return cfg
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -214,14 +229,27 @@ def convert(
 ) -> dict[str, Any]:
     """Markdown を PowerPoint に変換する。
 
-    returns: {"pptx", "slide_count", "spec_count", "outline", "warnings", "meta"}
+    returns: {"pptx", "slide_count", "spec_count", "outline", "warnings",
+              "meta", "detected"}
     """
     check_template_name(template_filename)
-    cfg = build_config(config_yaml)
+    # config_yaml が壊れているならテンプレートを開く前に落とす
+    parse_config_yaml(config_yaml)
 
     with tempfile.TemporaryDirectory(prefix="md2ppt-") as td:
         work = Path(td)
-        cfg["template"] = str(prepare_template(template_bytes, work))
+        path = prepare_template(template_bytes, work)
+
+        # レイアウト名は既定値（表紙 / 章扉 / 本文 …）とは限らないので、
+        # テンプレートの中身から実際のレイアウトを判定して既定値の上に敷く。
+        # config_yaml で明示された項目は引き続き最優先される。
+        info = describe_presentation(
+            _open_presentation(path), Path(template_filename or "template.pptx").name
+        )
+        detected = detect_config(info)
+
+        cfg = build_config(config_yaml, detected)
+        cfg["template"] = str(path)
 
         meta, blocks, notes = core.parse_markdown(md_text)
         specs = core.build_slides(meta, blocks, cfg)
@@ -258,6 +286,8 @@ def convert(
                 k: str(v) for k, v in (meta or {}).items()
                 if k in ("title", "subtitle", "author", "date") and v
             },
+            "detected": detected,
+            "layouts_used": dict(cfg["layouts"]),
         }
 
 
@@ -269,6 +299,43 @@ def _inch(v) -> float | None:
     return None if v is None else round(v / EMU_IN, 2)
 
 
+def describe_presentation(prs: Presentation, name: str) -> dict[str, Any]:
+    """開いた Presentation からレイアウトとプレースホルダの一覧を作る。"""
+    layouts = []
+    for i, layout in enumerate(prs.slide_layouts):
+        placeholders = []
+        for ph in layout.placeholders:
+            pf = ph.placeholder_format
+            placeholders.append({
+                "idx": pf.idx,
+                "type": str(pf.type).split(" ")[0],
+                "name": ph.name,
+                "left_in": _inch(ph.left),
+                "top_in": _inch(ph.top),
+                "width_in": _inch(ph.width),
+                "height_in": _inch(ph.height),
+            })
+        layouts.append({
+            "index": i,
+            "name": layout.name,
+            "placeholders": placeholders,
+            "other_shapes": [s.name for s in layout.shapes if not s.is_placeholder],
+        })
+
+    w_in = _inch(prs.slide_width) or 0.0
+    h_in = _inch(prs.slide_height) or 0.0
+    return {
+        "template_name": name,
+        "slide_width_in": w_in,
+        "slide_height_in": h_in,
+        "aspect_ratio": _aspect(w_in, h_in),
+        "master_count": len(prs.slide_masters),
+        "layout_count": len(prs.slide_layouts),
+        "layout_names": [l["name"] for l in layouts],
+        "layouts": layouts,
+    }
+
+
 def analyze_template(
     template_bytes: bytes, template_filename: str | None = None
 ) -> dict[str, Any]:
@@ -278,41 +345,7 @@ def analyze_template(
 
     with tempfile.TemporaryDirectory(prefix="md2ppt-") as td:
         path = prepare_template(template_bytes, Path(td))
-        prs = _open_presentation(path)
-
-        layouts = []
-        for i, layout in enumerate(prs.slide_layouts):
-            placeholders = []
-            for ph in layout.placeholders:
-                pf = ph.placeholder_format
-                placeholders.append({
-                    "idx": pf.idx,
-                    "type": str(pf.type).split(" ")[0],
-                    "name": ph.name,
-                    "left_in": _inch(ph.left),
-                    "top_in": _inch(ph.top),
-                    "width_in": _inch(ph.width),
-                    "height_in": _inch(ph.height),
-                })
-            layouts.append({
-                "index": i,
-                "name": layout.name,
-                "placeholders": placeholders,
-                "other_shapes": [s.name for s in layout.shapes if not s.is_placeholder],
-            })
-
-        w_in = _inch(prs.slide_width) or 0.0
-        h_in = _inch(prs.slide_height) or 0.0
-        return {
-            "template_name": name,
-            "slide_width_in": w_in,
-            "slide_height_in": h_in,
-            "aspect_ratio": _aspect(w_in, h_in),
-            "master_count": len(prs.slide_masters),
-            "layout_count": len(prs.slide_layouts),
-            "layout_names": [l["name"] for l in layouts],
-            "layouts": layouts,
-        }
+        return describe_presentation(_open_presentation(path), name)
 
 
 def _aspect(w: float, h: float) -> str:
@@ -360,47 +393,114 @@ def format_template_report(info: dict[str, Any]) -> str:
 
 
 _GUESS = {
-    "title": ("表紙", "title slide", "タイトル スライド"),
-    "section": ("章扉", "section", "セクション"),
-    "content": ("本文", "title and content", "タイトルとコンテンツ"),
+    "title": ("表紙", "title slide", "タイトル スライド", "cover", "扉"),
+    "section": ("章扉", "section", "セクション", "章見出し"),
+    "content": ("本文", "title and content", "タイトルとコンテンツ", "コンテンツ"),
     "table": ("タイトルのみ", "title only"),
     "blank": ("白紙", "blank"),
 }
 
+# プレースホルダの分類。日付・フッター・ページ番号は「中身」とは数えない。
+_TITLE_PH = ("TITLE", "CENTER_TITLE", "VERTICAL_TITLE")
+_CHROME_PH = ("DATE", "FOOTER", "SLIDE_NUMBER")
+_BODY_PH = ("BODY", "OBJECT", "VERTICAL_BODY", "VERTICAL_OBJECT")
 
-def suggest_config(info: dict[str, Any]) -> dict[str, Any]:
-    """レイアウト名から config の推測値を組み立てる。emit_config() 相当。"""
-    names = info["layout_names"]
 
-    def guess(keys: tuple[str, ...]) -> str:
-        for name in names:
-            low = name.lower()
+def _title_placeholder(layout: dict) -> dict | None:
+    return next((p for p in layout["placeholders"] if p["type"] in _TITLE_PH), None)
+
+
+def _content_placeholders(layout: dict) -> list[dict]:
+    return [
+        p for p in layout["placeholders"]
+        if p["type"] not in _TITLE_PH and p["type"] not in _CHROME_PH
+    ]
+
+
+def detect_config(info: dict[str, Any]) -> dict[str, Any]:
+    """テンプレートの中身から layouts / placeholders を判定する。
+
+    まずレイアウト名のキーワードで探し、見つからなければプレースホルダの
+    構成から推測する。名前が英語でも独自の命名でも、標準的なレイアウト構成の
+    テンプレートであれば設定なしで動く。
+    """
+    layouts = info["layouts"]
+    if not layouts:
+        return {}
+
+    def by_name(key: str) -> dict | None:
+        keys = _GUESS[key]
+        for layout in layouts:
+            low = layout["name"].lower()
             if any(k.lower() in low for k in keys):
-                return name
-        return names[0] if names else ""
+                return layout
+        return None
 
-    layouts = {key: guess(keys) for key, keys in _GUESS.items()}
+    def first(pred) -> dict | None:
+        return next((l for l in layouts if pred(l)), None)
 
-    # content レイアウトの本文プレースホルダ idx を実測する（既定の 1 とは限らない）
-    body_idx = 1
-    content = next((l for l in info["layouts"] if l["name"] == layouts["content"]), None)
-    if content:
-        body = next(
-            (p for p in content["placeholders"]
-             if p["idx"] != 0 and p["type"] in ("BODY", "OBJECT", "SUBTITLE")),
-            None,
-        )
-        if body:
-            body_idx = body["idx"]
+    # 表紙: SUBTITLE を持つ、なければ CENTER_TITLE を持つレイアウト
+    cover = (
+        by_name("title")
+        or first(lambda l: any(p["type"] == "SUBTITLE" for p in l["placeholders"]))
+        or first(lambda l: any(p["type"] == "CENTER_TITLE" for p in l["placeholders"]))
+        or layouts[0]
+    )
+
+    # 本文: タイトル＋本文プレースホルダがちょうど 1 つ（2 カラムや比較を避ける）
+    content = (
+        by_name("content")
+        or first(lambda l: _title_placeholder(l)
+                 and len(_content_placeholders(l)) == 1
+                 and _content_placeholders(l)[0]["type"] in _BODY_PH)
+        or first(lambda l: _title_placeholder(l) and _content_placeholders(l))
+        or layouts[0]
+    )
+
+    # タイトルのみ: タイトルはあるが本文プレースホルダが無い（手動レイアウト用）
+    only = (
+        by_name("table")
+        or first(lambda l: _title_placeholder(l) and not _content_placeholders(l))
+    )
+
+    # 白紙: プレースホルダが（装飾を除いて）無い
+    blank = (
+        by_name("blank")
+        or first(lambda l: not _title_placeholder(l) and not _content_placeholders(l))
+        or only
+        or content
+    )
+
+    # 章扉: 大きなタイトルだけ置ければよいので、タイトルのみ → 本文の順に代用
+    section = by_name("section") or only or content
+
+    title_ph = _title_placeholder(content)
+    body_ph = next(
+        (p for p in _content_placeholders(content) if p["type"] in _BODY_PH), None
+    )
+    sub_ph = next(
+        (p for p in _content_placeholders(cover)
+         if p["type"] in ("SUBTITLE",) + _BODY_PH), None
+    )
 
     return {
-        "layouts": layouts,
-        "placeholders": {"title": 0, "subtitle": 1, "body": body_idx},
+        "layouts": {
+            "title": cover["name"],
+            "section": section["name"],
+            "content": content["name"],
+            "table": (only or blank or content)["name"],
+            "blank": blank["name"],
+        },
+        "placeholders": {
+            "title": title_ph["idx"] if title_ph else 0,
+            "subtitle": sub_ph["idx"] if sub_ph else 1,
+            "body": body_ph["idx"] if body_ph else 1,
+        },
     }
 
 
 def config_to_yaml(suggested: dict[str, Any], template_name: str) -> str:
-    """suggest_config() の結果を config_yaml パラメータに貼れる YAML にする。"""
+    """detect_config() の結果を config_yaml パラメータに貼れる YAML にする。"""
     body = yaml.safe_dump(
         suggested, allow_unicode=True, sort_keys=False, default_flow_style=False
     )

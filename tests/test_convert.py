@@ -52,6 +52,24 @@ def as_potx(pptx_bytes: bytes) -> bytes:
     return out.getvalue()
 
 
+def english_template(anonymize: bool = False) -> bytes:
+    """python-pptx 既定のテンプレート（標準的な英語レイアウト 11 種）。
+
+    anonymize=True でレイアウト名を Layout-NN に潰し、名前のヒントを完全に消す。
+    """
+    import io
+
+    from pptx import Presentation
+
+    prs = Presentation()
+    if anonymize:
+        for i, layout in enumerate(prs.slide_layouts):
+            layout.name = f"Layout-{i:02d}"
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
 def main() -> int:
     md = SAMPLE_MD.read_text(encoding="utf-8")
     tpl = TEMPLATE.read_bytes()
@@ -98,8 +116,8 @@ def main() -> int:
     check("report mentions every layout",
           all(n in report for n in info["layout_names"]))
 
-    print("[5] suggest_config round-trips through convert")
-    sug = u.suggest_config(info)
+    print("[5] detect_config round-trips through convert")
+    sug = u.detect_config(info)
     check("guessed 表紙/章扉/本文",
           (sug["layouts"]["title"], sug["layouts"]["section"],
            sug["layouts"]["content"]) == ("表紙", "章扉", "本文"),
@@ -161,6 +179,55 @@ def main() -> int:
     check("used_file True for file", used is True)
     check("file_name_of", u.file_name_of(FakeFile()) == "in.md")
     check("file_bytes(None) is None", u.file_bytes(None) is None)
+
+    print("[10] config_yaml 無しで名前の違うテンプレートに追従する")
+    en = english_template()
+    r10 = u.convert(md, en, "default.pptx", None)
+    check("english template needs no config", not r10["warnings"], str(r10["warnings"]))
+    check("english layouts detected by name",
+          r10["layouts_used"] == {
+              "title": "Title Slide", "section": "Section Header",
+              "content": "Title and Content", "table": "Title Only",
+              "blank": "Blank"},
+          str(r10["layouts_used"]))
+    check("no extra slides from bad layouts",
+          r10["slide_count"] == r10["spec_count"] == 13,
+          f"{r10['slide_count']}/{r10['spec_count']}")
+
+    print("[11] 名前が手がかりにならなくても構造から判定する")
+    anon = english_template(anonymize=True)
+    info_a = u.analyze_template(anon, "anon.pptx")
+    check("names carry no hint",
+          all(n.startswith("Layout-") for n in info_a["layout_names"]),
+          str(info_a["layout_names"]))
+    r11 = u.convert(md, anon, "anon.pptx", None)
+    check("anonymous template needs no config", not r11["warnings"], str(r11["warnings"]))
+    check("cover = the layout with a SUBTITLE",
+          r11["layouts_used"]["title"] == "Layout-00", str(r11["layouts_used"]))
+    check("content = title + exactly one body",
+          r11["layouts_used"]["content"] == "Layout-01", str(r11["layouts_used"]))
+    check("table = title with no body",
+          r11["layouts_used"]["table"] == "Layout-05", str(r11["layouts_used"]))
+    check("blank = no placeholders at all",
+          r11["layouts_used"]["blank"] == "Layout-06", str(r11["layouts_used"]))
+    check("section falls back to the title-only layout",
+          r11["layouts_used"]["section"] == "Layout-05", str(r11["layouts_used"]))
+
+    print("[12] config_yaml は自動判定より優先される")
+    r12 = u.convert(md, anon, "anon.pptx", 'layouts:\n  content: "Layout-07"\n')
+    check("explicit content layout wins",
+          r12["layouts_used"]["content"] == "Layout-07", str(r12["layouts_used"]))
+    check("unspecified keys keep the detected value",
+          r12["layouts_used"]["title"] == "Layout-00", str(r12["layouts_used"]))
+
+    print("[13] 既定テンプレートの判定は変わらない（回帰確認）")
+    det = u.detect_config(u.analyze_template(tpl, "template.pptx"))
+    check("japanese template still detected by name",
+          det["layouts"] == {"title": "表紙", "section": "章扉", "content": "本文",
+                             "table": "タイトルのみ", "blank": "白紙"},
+          str(det["layouts"]))
+    check("body placeholder idx detected", det["placeholders"]["body"] == 1,
+          str(det["placeholders"]))
 
     print()
     if failures:

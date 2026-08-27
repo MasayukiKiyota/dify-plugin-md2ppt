@@ -1,6 +1,6 @@
 identity:
   name: inspect_template
-  author: j-ainnovation
+  author: masayukikiyota
   label:
     en_US: Inspect PowerPoint template
     ja_JP: PowerPoint テンプレート解析
@@ -8,7 +8,7 @@ description:
   human:
     en_US: List the slide layouts and placeholders of a PowerPoint template, and optionally generate a starter mapping config.
     ja_JP: PowerPoint テンプレートのスライドレイアウトとプレースホルダを一覧表示し、必要ならマッピング設定の雛形も生成します。
-  llm: Analyzes a PowerPoint template (.pptx or .potx) and reports its slide size, slide masters, and every slide layout with the placeholder index, type, name and position of each placeholder. Use this before the "Markdown to PowerPoint" tool to discover the layout names a template actually uses. Set emit_config to true to also generate a starter YAML configuration that maps Markdown constructs to this template's layout names, ready to paste into that tool's config_yaml parameter.
+  llm: Analyzes a PowerPoint template (.pptx or .potx) and reports its slide size, slide masters, and every slide layout with the placeholder index, type, name and position of each placeholder. The "Markdown to PowerPoint" tool detects layouts on its own, so this is not a required first step - use it to inspect a template, or when that tool picked the wrong layout. Set emit_config to true to also return the layout mapping it would detect, as YAML ready to adjust and paste into that tool's config_yaml parameter.
 parameters:
   - name: template_file
     type: file
@@ -29,9 +29,9 @@ parameters:
       en_US: Generate mapping config
       ja_JP: マッピング設定を生成
     human_description:
-      en_US: Also generate a starter YAML config for the "Markdown to PowerPoint" tool, and return it as a config.yaml file.
-      ja_JP: 「Markdown を PowerPoint に変換」ツール用の設定 YAML 雛形を生成し、config.yaml ファイルとしても返します。
-    llm_description: Set to true to also generate a starter YAML configuration mapping Markdown constructs to this template's layout names. Default is false.
+      en_US: Also return the layout mapping that would be auto-detected for this template, as YAML and as a config.yaml file. Useful for checking or adjusting the detection.
+      ja_JP: このテンプレートに対して自動判定されるレイアウト対応を YAML と config.yaml ファイルで返します。判定結果の確認・調整に使います。
+    llm_description: Set to true to also return the layout mapping that would be auto-detected for this template, as YAML. Default is false.
     form: llm
 output_schema:
   type: object

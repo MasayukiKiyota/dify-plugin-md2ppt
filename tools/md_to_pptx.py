@@ -80,6 +80,7 @@ class MdToPptxTool(Tool):
             "spec_count": result["spec_count"],
             "template_name": template_name,
             "meta": result["meta"],
+            "layouts_used": result["layouts_used"],
             "outline": result["outline"],
             "warnings": warnings,
         })

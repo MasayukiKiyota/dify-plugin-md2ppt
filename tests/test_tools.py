@@ -169,6 +169,27 @@ def main() -> int:
     check("round trip has no warnings", j2["warnings"] == [], str(j2["warnings"]))
     check("same slide count", j2["slide_count"] == 13, str(j2["slide_count"]))
 
+    print("[8b] config_yaml 無しでも英語テンプレートが崩れない")
+    import io
+
+    from pptx import Presentation
+
+    buf = io.BytesIO()
+    Presentation().save(buf)          # python-pptx 既定 = 標準的な英語レイアウト
+    msgs = run(MdToPptxTool, {
+        "markdown_text": SAMPLE_MD,
+        "template_file": FakeFile(buf.getvalue(), "default.pptx"),
+    })
+    j3 = payload(by_type(msgs, JSON)[0])
+    check("no config needed", j3["success"] is True and j3["warnings"] == [],
+          str(j3["warnings"]))
+    check("layouts auto-detected",
+          j3["layouts_used"]["content"] == "Title and Content",
+          str(j3["layouts_used"]))
+    check("no layout fallback bloat", j3["slide_count"] == 13,
+          str(j3["slide_count"]))
+    check("blob still returned", len(by_type(msgs, BLOB)) == 1)
+
     print("[9] inspect_template: missing file is a clean error")
     msgs = run(InspectTemplateTool, {})
     check("no blob", not by_type(msgs, BLOB))

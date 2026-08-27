@@ -22,14 +22,18 @@ Markdown とテンプレートを受け取り、`.pptx` ファイルを返しま
 | `markdown_text` | string | – | 変換する Markdown 本文。LLM ノードの出力を直結できます |
 | `markdown_file` | file | – | 変換する `.md` / `.txt` ファイル。`markdown_text` より優先されます |
 | `template_file` | file | **必須** | レイアウトとテーマを流用する `.pptx` / `.potx` |
-| `config_yaml` | string | – | Markdown 要素とテンプレートのレイアウト名の対応づけ（後述） |
+| `config_yaml` | string | – | 自動判定の上書き。**通常は不要**（後述） |
 | `file_name` | string | – | 出力ファイル名。既定は `presentation.pptx` |
 
 `markdown_text` と `markdown_file` はどちらか一方を指定してください（両方指定した場合は
 ファイルが使われ、その旨が警告に出ます）。
 
+テンプレートのレイアウトは自動判定されるため、`config_yaml` を指定しなくても
+日本語・英語・独自命名のどのテンプレートでもそのまま動きます。
+
 出力は「テキストの要約 → JSON のメタデータ → `.pptx` ファイル」の順に返ります。
-JSON には `slide_count` / `spec_count` / `outline` / `warnings` などが入ります。
+JSON には `slide_count` / `spec_count` / `layouts_used` / `outline` / `warnings` などが
+入ります。
 
 ### 2. PowerPoint テンプレート解析 (`inspect_template`)
 
@@ -39,7 +43,7 @@ JSON には `slide_count` / `spec_count` / `outline` / `warnings` などが入�
 | パラメータ | 型 | 必須 | 説明 |
 | --- | --- | --- | --- |
 | `template_file` | file | **必須** | 解析する `.pptx` / `.potx` |
-| `emit_config` | boolean | – | `true` で `config_yaml` の雛形も生成し、`config.yaml` として返します |
+| `emit_config` | boolean | – | `true` で `config_yaml` の雛形も生成し、`config.yaml` として返します（自動判定の内容を確認・調整したいとき用） |
 
 出力例:
 
@@ -52,12 +56,37 @@ JSON には `slide_count` / `spec_count` / `outline` / `warnings` などが入�
 
 ## 自社テンプレートを使う手順
 
-1. `inspect_template` に自社テンプレートを渡し、`emit_config` を `true` にする
-2. 返ってきた `config_yaml`（または `config.yaml` ファイルの中身）を確認する
-3. それを `md_to_pptx` の `config_yaml` パラメータに貼り付ける
+**通常は設定不要です。** テンプレートをアップロードするだけで、使うべきレイアウトが
+自動判定されます。判定は次の 2 段階です。
 
-レイアウト名は「表紙 / 章扉 / 本文 / タイトルのみ / 白紙」といったキーワードから推測されます。
-推測が外れている場合は手で直してください。
+1. **レイアウト名のキーワード** — 「表紙 / 章扉 / 本文 / タイトルのみ / 白紙」や
+   「Title Slide / Section Header / Title and Content / Title Only / Blank」など
+2. **プレースホルダの構成** — 名前が手がかりにならない場合の判定基準
+
+   | 用途 | 判定基準 |
+   | --- | --- |
+   | 表紙 | サブタイトルのプレースホルダを持つ（無ければ中央タイトル） |
+   | 本文 | タイトル＋本文プレースホルダがちょうど 1 つ（2 カラムや比較は避ける） |
+   | タイトルのみ | タイトルはあるが本文プレースホルダが無い |
+   | 白紙 | プレースホルダが（日付・フッター・ページ番号を除いて）無い |
+   | 章扉 | 「タイトルのみ」→「本文」の順に代用 |
+
+   `placeholders` の `title` / `subtitle` / `body` の idx も実際のテンプレートから読み取ります。
+
+実際に使われたレイアウト名は、変換結果の JSON の `layouts_used` で確認できます。
+
+### 自動判定を上書きしたいとき
+
+判定が意図と違う場合だけ `config_yaml` を指定してください。**明示した項目が常に優先され、
+書かなかった項目は自動判定の値が使われます**（部分的な指定で構いません）。
+
+```yaml
+layouts:
+  content: "タイトルとコンテンツ"   # ここだけ上書き。他は自動判定のまま
+```
+
+雛形が欲しい場合は `inspect_template` に `emit_config: true` を渡すと、そのテンプレート用の
+設定が生成されます。
 
 ```yaml
 layouts:
@@ -72,9 +101,8 @@ placeholders:
   body: 1
 ```
 
-`config_yaml` を指定しない場合は既定値が使われます。テンプレートのレイアウト名が
-既定値と一致しないときは、そのレイアウトの代わりに先頭のレイアウトが使われ、
-`warnings` にその旨が出ます。**警告が出たら `config_yaml` を設定してください。**
+指定したレイアウト名がテンプレートに存在しない場合は、代わりに先頭のレイアウトが使われ、
+`warnings` にその旨が出ます。
 
 ## Markdown の対応表
 
@@ -113,7 +141,8 @@ placeholders:
 
 ## `config_yaml` の主な設定項目
 
-`layouts` / `placeholders` のほかに、以下が指定できます。指定しなかった項目は既定値です。
+`layouts` / `placeholders`（自動判定される）のほかに、以下が指定できます。
+指定しなかった項目は既定値です。
 
 ```yaml
 fonts:
