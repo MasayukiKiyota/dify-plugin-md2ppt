@@ -1,0 +1,109 @@
+identity:
+  name: md_to_pptx
+  author: j-ainnovation
+  label:
+    en_US: Markdown to PowerPoint
+    ja_JP: Markdown を PowerPoint に変換
+description:
+  human:
+    en_US: Convert Markdown into a .pptx deck using an uploaded PowerPoint template.
+    ja_JP: アップロードした PowerPoint テンプレートを使って Markdown を .pptx に変換します。
+  llm: Converts Markdown into a PowerPoint (.pptx) presentation and returns it as a downloadable file. A PowerPoint template (.pptx or .potx) must be supplied - its layouts, theme colors and fonts are reused for the generated deck. The Markdown is mapped to slides as follows - YAML front matter with a title becomes the cover slide, a level-1 heading becomes a section divider slide, a level-2 heading starts a new slide, and level-3/4 headings become in-slide headings. Bullet lists (up to 5 levels), ordered lists, tables with column alignment, fenced code blocks, block quotes, horizontal rules, images and inline bold/italic/code/strikethrough/links are all supported. Returns metadata plus the .pptx file itself.
+parameters:
+  - name: markdown_text
+    type: string
+    required: false
+    label:
+      en_US: Markdown text
+      ja_JP: Markdown テキスト
+    human_description:
+      en_US: The Markdown source to convert. Ignored when a Markdown file is also supplied.
+      ja_JP: 変換する Markdown 本文。Markdown ファイルも指定した場合はファイルが優先されます。
+    llm_description: The Markdown source to convert into slides. Supply either this or markdown_file. Use YAML front matter (title / subtitle / author / date) for the cover slide, "#" for section dividers and "##" for each content slide.
+    form: llm
+  - name: markdown_file
+    type: file
+    required: false
+    label:
+      en_US: Markdown file
+      ja_JP: Markdown ファイル
+    human_description:
+      en_US: A .md or .txt file to convert. Takes precedence over the Markdown text field.
+      ja_JP: 変換する .md / .txt ファイル。Markdown テキストより優先されます。
+    llm_description: An uploaded Markdown file to convert. Supply either this or markdown_text.
+    form: llm
+  - name: template_file
+    type: file
+    required: true
+    label:
+      en_US: PowerPoint template
+      ja_JP: PowerPoint テンプレート
+    human_description:
+      en_US: The .pptx or .potx template whose layouts, theme and fonts are used. Run the "Inspect PowerPoint template" tool first to find its layout names.
+      ja_JP: レイアウト・テーマ・フォントを流用する .pptx / .potx。レイアウト名は「PowerPoint テンプレート解析」ツールで確認できます。
+    llm_description: The PowerPoint template file (.pptx or .potx) to base the deck on. This is required. If its layout names differ from the defaults, map them via config_yaml.
+    form: llm
+  - name: config_yaml
+    type: string
+    required: false
+    label:
+      en_US: Mapping config (YAML)
+      ja_JP: マッピング設定（YAML）
+    human_description:
+      en_US: Optional YAML that maps Markdown elements to the template's layout names, and overrides fonts, sizes, colors and options. Generate a starting point with the "Inspect PowerPoint template" tool.
+      ja_JP: Markdown 要素をテンプレートのレイアウト名に対応づける YAML。フォント・サイズ・色・オプションも上書きできます。雛形は「PowerPoint テンプレート解析」ツールで生成できます。
+    llm_description: Optional YAML configuration mapping Markdown constructs to the template's layout names (keys - layouts, placeholders, fonts, sizes, colors, table, quote, image, spacing, options). Leave empty to use the defaults.
+    form: form
+  - name: file_name
+    type: string
+    required: false
+    default: presentation.pptx
+    label:
+      en_US: Output file name
+      ja_JP: 出力ファイル名
+    human_description:
+      en_US: Name of the generated file. A .pptx extension is added when missing.
+      ja_JP: 生成されるファイルの名前。.pptx が無ければ自動で付きます。
+    llm_description: The file name for the generated PowerPoint file, for example "quarterly-review.pptx".
+    form: llm
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: Whether the conversion succeeded.
+    file_name:
+      type: string
+      description: Name of the generated PowerPoint file.
+    mime_type:
+      type: string
+      description: MIME type of the generated file.
+    size:
+      type: number
+      description: Size of the generated file in bytes.
+    slide_count:
+      type: number
+      description: Number of slides in the generated deck, after automatic splitting.
+    spec_count:
+      type: number
+      description: Number of slides derived from the headings, before automatic splitting.
+    template_name:
+      type: string
+      description: File name of the template that was used.
+    meta:
+      type: object
+      description: Front matter values picked up from the Markdown (title, subtitle, author, date).
+    outline:
+      type: string
+      description: Human-readable list of the generated slides.
+    warnings:
+      type: array
+      description: Non-fatal problems, such as layout names missing from the template or unresolved images.
+      items:
+        type: string
+    error:
+      type: string
+      description: Error message when success is false.
+extra:
+  python:
+    source: tools/md_to_pptx.py

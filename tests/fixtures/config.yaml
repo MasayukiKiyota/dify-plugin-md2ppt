@@ -1,0 +1,108 @@
+# ════════════════════════════════════════════════════════════════
+# md2pptx 設定ファイル
+#   指定しなかった項目は md2pptx.py の DEFAULT_CONFIG が使われます。
+#   自分のテンプレートを使うときは、まず
+#       python3 inspect_template.py 自社テンプレート.pptx
+#   でレイアウト名とプレースホルダ idx を確認してから書き換えてください。
+# ════════════════════════════════════════════════════════════════
+
+template: template.pptx
+
+# Markdown の要素 → 使用するスライドレイアウト名
+layouts:
+  title:   "表紙"          # front matter の title から作る表紙
+  section: "章扉"          # H1
+  content: "本文"          # H2（テキストだけのスライド。本文プレースホルダに流す）
+  table:   "タイトルのみ"   # 表・コード・画像を含むスライド（手動レイアウト）
+  blank:   "白紙"
+
+# レイアウト内のプレースホルダ idx
+placeholders:
+  title: 0
+  subtitle: 1
+  body: 1
+
+# 手動レイアウト時の描画領域（inch）。null なら content レイアウトの本文
+# プレースホルダの位置をそのまま使います。
+body_area:
+  left: null
+  top: null
+  width: null
+  height: null
+
+fonts:
+  latin: Calibri          # 英数字
+  eastasian: Yu Gothic    # 日本語（Meiryo / MS PGothic / Noto Sans JP なども可）
+  code: Consolas
+  code_eastasian: MS Gothic
+
+sizes:
+  title: 32               # 本文スライドのタイトル
+  section_title: 40       # 章扉
+  cover_title: 40
+  cover_subtitle: 18
+  h3: 20                  # ### 小見出し
+  h4: 17
+  body: [18, 16, 14, 13, 12]   # 箇条書きのレベル別
+  paragraph: 16
+  table: 12
+  table_header: 12
+  code: 12
+  quote: 15
+  caption: 11
+  page_number: 10
+  min_body: 10
+
+colors:
+  text: "1F2430"
+  heading: "1E2A44"
+  accent: "1E6F8E"
+  muted: "6B7280"
+  code_text: "24292F"
+  code_bg: "F3F4F6"
+  quote_text: "4A5568"
+  quote_bar: "1E6F8E"
+  table_header_bg: "1E2A44"
+  table_header_text: "FFFFFF"
+  table_band_bg: "F2F4F7"
+  table_text: "1F2430"
+  table_border: "C9D2DC"
+
+table:
+  # PowerPoint 組み込みの表スタイル ID。
+  # テンプレート側の既定スタイルに任せたい場合は null にしてください。
+  style_id: "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"   # Medium Style 2 - Accent 1
+  first_row_header: true
+  banding: true
+  # true: 上の colors.table_* で明示的に塗る（どの環境でも同じ見た目）
+  # false: テンプレートの表スタイルの配色をそのまま使う
+  explicit_format: true
+  min_row_height: 0.32    # inch
+  cell_margin: 0.06       # inch
+
+quote:
+  bar: true
+  indent: 0.3
+  italic: true
+
+image:
+  max_height: 4.2         # inch
+  align: center
+
+spacing:
+  block_gap: 8            # pt（ブロック間）
+  para_space_after: 6     # pt
+  line_ratio: 1.38        # 行送りの見積り係数
+  list_indent: 0.3        # 箇条書きのインデント（inch）。null でテンプレート継承
+  list_hanging: 0.3       # ぶら下げ幅（inch）
+
+options:
+  auto_split: true                # 1 枚に収まらないときに続きスライドを作る
+  continuation_suffix: "（続き）"
+  shrink_steps: 2                 # 分割前に何段階フォントを縮めるか（1 段 = 8%）
+  cover_from_first_h1: false      # true なら先頭の H1 を表紙に使う
+  page_number: true
+  page_number_skip_first: true
+  section_slides: true            # false なら H1 も通常スライドに
+  notes_marker: notes             # <!-- notes: ... --> をスピーカーノートへ
+  table_header_repeat: true       # 表を分割したらヘッダ行を繰り返す

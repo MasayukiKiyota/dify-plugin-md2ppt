@@ -1,0 +1,81 @@
+identity:
+  name: inspect_template
+  author: j-ainnovation
+  label:
+    en_US: Inspect PowerPoint template
+    ja_JP: PowerPoint テンプレート解析
+description:
+  human:
+    en_US: List the slide layouts and placeholders of a PowerPoint template, and optionally generate a starter mapping config.
+    ja_JP: PowerPoint テンプレートのスライドレイアウトとプレースホルダを一覧表示し、必要ならマッピング設定の雛形も生成します。
+  llm: Analyzes a PowerPoint template (.pptx or .potx) and reports its slide size, slide masters, and every slide layout with the placeholder index, type, name and position of each placeholder. Use this before the "Markdown to PowerPoint" tool to discover the layout names a template actually uses. Set emit_config to true to also generate a starter YAML configuration that maps Markdown constructs to this template's layout names, ready to paste into that tool's config_yaml parameter.
+parameters:
+  - name: template_file
+    type: file
+    required: true
+    label:
+      en_US: PowerPoint template
+      ja_JP: PowerPoint テンプレート
+    human_description:
+      en_US: The .pptx or .potx file to analyze.
+      ja_JP: 解析する .pptx / .potx ファイル。
+    llm_description: The PowerPoint template file (.pptx or .potx) to analyze.
+    form: llm
+  - name: emit_config
+    type: boolean
+    required: false
+    default: false
+    label:
+      en_US: Generate mapping config
+      ja_JP: マッピング設定を生成
+    human_description:
+      en_US: Also generate a starter YAML config for the "Markdown to PowerPoint" tool, and return it as a config.yaml file.
+      ja_JP: 「Markdown を PowerPoint に変換」ツール用の設定 YAML 雛形を生成し、config.yaml ファイルとしても返します。
+    llm_description: Set to true to also generate a starter YAML configuration mapping Markdown constructs to this template's layout names. Default is false.
+    form: llm
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: Whether the analysis succeeded.
+    template_name:
+      type: string
+      description: File name of the analyzed template.
+    slide_width_in:
+      type: number
+      description: Slide width in inches.
+    slide_height_in:
+      type: number
+      description: Slide height in inches.
+    aspect_ratio:
+      type: string
+      description: Slide aspect ratio, for example 16:9.
+    master_count:
+      type: number
+      description: Number of slide masters.
+    layout_count:
+      type: number
+      description: Number of slide layouts.
+    layout_names:
+      type: array
+      description: Names of every slide layout, in order.
+      items:
+        type: string
+    layouts:
+      type: array
+      description: Every slide layout with its placeholders.
+      items:
+        type: object
+    suggested_config:
+      type: object
+      description: Guessed layout and placeholder mapping, or null when emit_config is false.
+    config_yaml:
+      type: string
+      description: The suggested mapping as YAML text, or null when emit_config is false.
+    error:
+      type: string
+      description: Error message when success is false.
+extra:
+  python:
+    source: tools/inspect_template.py

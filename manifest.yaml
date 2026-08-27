@@ -1,0 +1,33 @@
+version: 0.0.1
+type: plugin
+author: j-ainnovation
+name: md2ppt
+label:
+  en_US: Markdown to PowerPoint
+  ja_JP: Markdown to PowerPoint
+description:
+  en_US: Convert Markdown into a PowerPoint deck using your own .pptx/.potx template, and inspect a template's layouts and placeholders.
+  ja_JP: 自前の .pptx/.potx テンプレートを使って Markdown を PowerPoint に変換します。テンプレートのレイアウトとプレースホルダの解析も行えます。
+icon: icon.svg
+tags:
+  - productivity
+resource:
+  memory: 536870912
+  permission:
+    tool:
+      enabled: true
+plugins:
+  tools:
+    - provider/md2ppt.yaml
+meta:
+  version: 0.0.1
+  arch:
+    - amd64
+    - arm64
+  runner:
+    language: python
+    version: "3.12"
+    entrypoint: main
+  minimum_dify_version: 1.9.0
+created_at: 2026-08-27T00:00:00.000000+09:00
+privacy: PRIVACY.md

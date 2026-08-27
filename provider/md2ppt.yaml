@@ -1,0 +1,18 @@
+identity:
+  author: j-ainnovation
+  name: md2ppt
+  label:
+    en_US: Markdown to PowerPoint
+    ja_JP: Markdown to PowerPoint
+  description:
+    en_US: Convert Markdown into a PowerPoint deck that follows your own template's layouts, theme colors and fonts.
+    ja_JP: Markdown を、自前のテンプレートのレイアウト・配色・フォントに従った PowerPoint に変換します。
+  icon: icon.svg
+  tags:
+    - productivity
+tools:
+  - tools/md_to_pptx.yaml
+  - tools/inspect_template.yaml
+extra:
+  python:
+    source: provider/md2ppt.py
