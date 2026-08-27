@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# PowerPoint テンプレートは text=auto の自動判別に任せず明示的にバイナリ扱いにする
+*.pptx binary
+*.potx binary
+*.ppt  binary
+*.difypkg binary
