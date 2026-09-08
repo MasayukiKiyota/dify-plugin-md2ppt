@@ -323,6 +323,61 @@ layouts:
     check("template キーがあっても変換できる",
           u.convert(md, tpl, "t.pptx", with_template)["warnings"] == [])
 
+    print("[18] fonts を null にするとフォントを書き込まない")
+
+    def typefaces(pptx_bytes: bytes) -> set[str]:
+        """生成された .pptx の run に書かれた typeface を全部集める。"""
+        import io
+
+        from pptx import Presentation
+        from pptx.util import Emu  # noqa: F401  (pptx の遅延 import を促す)
+
+        ns = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+        found: set[str] = set()
+        prs = Presentation(io.BytesIO(pptx_bytes))
+        for slide in prs.slides:
+            for tag in ("latin", "ea", "cs"):
+                for el in slide.shapes._spTree.iter(f"{ns}{tag}"):
+                    found.add(el.get("typeface"))
+        return found
+
+    no_fonts = """fonts:
+  latin: null
+  eastasian: null
+  code: null
+  code_eastasian: null
+"""
+    r18 = u.convert(md, tpl, "t.pptx", no_fonts)
+    check("null fonts converts", not r18["warnings"], str(r18["warnings"]))
+    check("同じ枚数になる", r18["slide_count"] == r["slide_count"],
+          f"({r18['slide_count']} vs {r['slide_count']})")
+    check("typeface が 1 つも書かれない", typefaces(r18["pptx"]) == set(),
+          str(typefaces(r18["pptx"])))
+    check("既定設定では typeface が書かれる", "Calibri" in typefaces(r2["pptx"]),
+          str(sorted(typefaces(r2["pptx"]))))
+
+    print("[18b] 一部だけ null にもできる")
+    ea_only = """fonts:
+  latin: null
+  eastasian: Meiryo
+  code: null
+  code_eastasian: null
+"""
+    r18b = u.convert(md, tpl, "t.pptx", ea_only)
+    check("片側だけ null で変換できる", not r18b["warnings"], str(r18b["warnings"]))
+    check("指定した書体だけが書かれる", typefaces(r18b["pptx"]) == {"Meiryo"},
+          str(sorted(typefaces(r18b["pptx"]))))
+    # 空文字も「指定しない」として扱う（Dify から空欄が "" で届くことがある）
+    blank_fonts = """fonts:
+  latin: ""
+  eastasian: ""
+  code: ""
+  code_eastasian: ""
+"""
+    r18c = u.convert(md, tpl, "t.pptx", blank_fonts)
+    check("空文字も未指定扱い", typefaces(r18c["pptx"]) == set(),
+          str(sorted(typefaces(r18c["pptx"]))))
+
     print()
     if failures:
         print(f"FAILED: {len(failures)} check(s): {', '.join(failures)}")

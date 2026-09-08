@@ -59,6 +59,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "placeholders": {"title": 0, "subtitle": 1, "body": 1},
     # 手動レイアウト時の描画領域（inch）。null は本文プレースホルダから自動取得
     "body_area": {"left": None, "top": None, "width": None, "height": None},
+    # null にした書体は指定せず、スライドマスターのフォントをそのまま使う。
     "fonts": {
         "latin": "Calibri",
         "eastasian": "Yu Gothic",
@@ -490,24 +491,29 @@ def rgb(hexstr: str) -> RGBColor:
     return RGBColor.from_string(hexstr.replace("#", "").upper())
 
 
-def set_typeface(rPr, latin: str, ea: str) -> None:
-    """<a:latin> の直後に <a:ea>/<a:cs> を差し込む（日本語が明朝に落ちるのを防ぐ）。"""
-    latin_el = rPr.find(qn("a:latin"))
-    if latin_el is None:
-        latin_el = rPr.makeelement(qn("a:latin"), {"typeface": latin})
-        rPr.append(latin_el)
-    else:
-        latin_el.set("typeface", latin)
-    idx = list(rPr).index(latin_el)
-    for tag, face in ((qn("a:ea"), ea), (qn("a:cs"), latin)):
+def set_typeface(rPr, latin: str | None, ea: str | None) -> None:
+    """<a:latin> の直後に <a:ea>/<a:cs> を差し込む（日本語が明朝に落ちるのを防ぐ）。
+
+    None を渡した書体は要素を書き込まないので、スライドマスター（テーマ）の
+    フォントがそのまま効く。
+    """
+    prev = None
+    for tag, face in ((qn("a:latin"), latin), (qn("a:ea"), ea),
+                      (qn("a:cs"), latin)):
+        if face is None:
+            continue
         el = rPr.find(tag)
         if el is None:
             el = rPr.makeelement(tag, {"typeface": face})
-            idx += 1
-            rPr.insert(idx, el)
+            if prev is None:
+                # latin を書かない場合でも、既にある <a:solidFill> などより
+                # 後ろに置く必要があるので末尾に足す。
+                rPr.append(el)
+            else:
+                rPr.insert(list(rPr).index(prev) + 1, el)
         else:
             el.set("typeface", face)
-            idx = list(rPr).index(el)
+        prev = el
 
 
 class Painter:
@@ -515,7 +521,9 @@ class Painter:
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.f = cfg["fonts"]
+        # 空欄（null / 空文字）は「指定しない」= マスターのフォントに任せる。
+        self.f = {k: (v if isinstance(v, str) and v.strip() else None)
+                  for k, v in cfg["fonts"].items()}
         self.c = cfg["colors"]
         self.s = cfg["sizes"]
 

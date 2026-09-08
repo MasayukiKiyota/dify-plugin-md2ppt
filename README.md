@@ -138,7 +138,9 @@ placeholders:
   位置は `body_area` で上書きできます。
 - **日本語フォントの指定**
   `<a:latin>` だけでなく `<a:ea>` も明示するため、日本語が別フォントに落ちません
-  （`fonts.eastasian` で指定）。
+  （`fonts.eastasian` で指定）。テンプレートのフォントをそのまま使いたい場合は
+  `fonts` の項目を `null` にすると、その書体は書き込まれずスライドマスターの
+  設定が効きます。
 - **あふれの自動処理**
   1 枚に収まらない場合、まずフォントを段階的に縮小し（`options.shrink_steps`）、
   それでも収まらなければ「（続き）」スライドに分割します。表は行単位で分割し、
@@ -154,6 +156,7 @@ placeholders:
 fonts:
   latin: Calibri
   eastasian: Yu Gothic       # Meiryo / MS PGothic / Noto Sans JP なども可
+  # null にするとスライドマスター（テーマ）のフォントをそのまま使う
 sizes:
   title: 32
   body: [18, 16, 14, 13, 12] # 箇条書きのレベル別

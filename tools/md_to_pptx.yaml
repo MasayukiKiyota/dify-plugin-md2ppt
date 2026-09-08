@@ -51,8 +51,8 @@ parameters:
       en_US: Mapping config (YAML)
       ja_JP: マッピング設定（YAML）
     human_description:
-      en_US: Usually unnecessary - the layouts are detected automatically. Use this only to override the detection, or to change fonts, sizes, colors and options. Anything you leave out keeps its auto-detected or default value.
-      ja_JP: 通常は不要です（レイアウトは自動判定されます）。判定結果を上書きしたい場合や、フォント・サイズ・色・オプションを変えたい場合にのみ指定します。書かなかった項目は自動判定値・既定値のままです。
+      en_US: Usually unnecessary - the layouts are detected automatically. Use this only to override the detection, or to change fonts, sizes, colors and options. Anything you leave out keeps its auto-detected or default value. Set a fonts entry to null to keep the template's own font for that script.
+      ja_JP: 通常は不要です（レイアウトは自動判定されます）。判定結果を上書きしたい場合や、フォント・サイズ・色・オプションを変えたい場合にのみ指定します。書かなかった項目は自動判定値・既定値のままです。 fonts の項目を null にすると、その書体はテンプレート（スライドマスター）の設定をそのまま使います。
     llm_description: Optional YAML configuration. Normally omit it - the layouts are auto-detected from the template. Supply it only to override the detection or to change presentation settings (keys - layouts, placeholders, fonts, sizes, colors, table, quote, image, spacing, options). Values given here always win over the auto-detected ones; omitted keys keep their auto-detected or default value.
     form: form
   - name: file_name

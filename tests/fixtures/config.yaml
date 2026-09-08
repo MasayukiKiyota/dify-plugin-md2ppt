@@ -30,6 +30,8 @@ body_area:
   width: null
   height: null
 
+# 書体。null にするとその書体を書き込まず、スライドマスター（テーマ）の
+# フォントをそのまま使います。4 つとも null にすればフォント指定は一切しません。
 fonts:
   latin: Calibri          # 英数字
   eastasian: Yu Gothic    # 日本語（Meiryo / MS PGothic / Noto Sans JP なども可）
