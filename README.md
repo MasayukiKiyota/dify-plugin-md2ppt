@@ -136,11 +136,17 @@ placeholders:
 - **表・コード・画像を含むスライドは手動レイアウト**
   「タイトルのみ」レイアウトを使い、本文プレースホルダと同じ領域にブロックを縦に積みます。
   位置は `body_area` で上書きできます。
-- **日本語フォントの指定**
-  `<a:latin>` だけでなく `<a:ea>` も明示するため、日本語が別フォントに落ちません
-  （`fonts.eastasian` で指定）。テンプレートのフォントをそのまま使いたい場合は
-  `fonts` の項目を `null` にすると、その書体は書き込まれずスライドマスターの
-  設定が効きます。
+- **既定はテンプレート任せ（フォント・配色を上書きしない）**
+  `fonts` / `colors` / `table.style_id` / `spacing.list_indent` の既定値は
+  すべて `null`（＝指定しない）です。設定なしで変換すると書体・色・表スタイル・
+  字下げを一切書き込まないので、スライドマスターとテーマの設定がそのまま残り、
+  テンプレートの見た目を崩しません。空文字 `""` も `null` と同じ扱いです。
+- **色や書体を固定したいとき**
+  `config_yaml` で値を書けば、そのぶんだけテンプレートより優先されます。
+  フォントは `<a:latin>` だけでなく `<a:ea>` も明示するので、日本語が別フォントに
+  落ちません（`fonts.eastasian` で指定）。表のセルまで塗って環境差をなくしたい
+  場合は `colors.table_*` を書いたうえで `table.explicit_format: true` にします
+  （既定は `false` ＝ 表スタイル側の書式に任せる）。
 - **あふれの自動処理**
   1 枚に収まらない場合、まずフォントを段階的に縮小し（`options.shrink_steps`）、
   それでも収まらなければ「（続き）」スライドに分割します。表は行単位で分割し、
@@ -150,25 +156,26 @@ placeholders:
 ## `config_yaml` の主な設定項目
 
 `layouts` / `placeholders`（自動判定される）のほかに、以下が指定できます。
-指定しなかった項目は既定値です。
+指定しなかった項目は既定値です。`fonts` / `colors` / `table.style_id` /
+`spacing.list_indent` の既定値は `null`（テンプレート任せ）なので、下の例は
+「テンプレートより優先して固定したいとき」の書き方です。
 
 ```yaml
-fonts:
+fonts:                       # 既定は 4 つとも null（テーマのフォントを使う）
   latin: Calibri
   eastasian: Yu Gothic       # Meiryo / MS PGothic / Noto Sans JP なども可
-  # null にするとスライドマスター（テーマ）のフォントをそのまま使う
 sizes:
   title: 32
   body: [18, 16, 14, 13, 12] # 箇条書きのレベル別
-colors:
+colors:                      # 既定は 14 色すべて null（テーマの配色を使う）
   accent: "1E6F8E"
 table:
-  # テンプレート側の表スタイルに任せたいときは style_id: null / explicit_format: false
+  # 既定は style_id: null（テンプレートの表スタイル）。固定したいときだけ書く
   style_id: "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"   # Medium Style 2 - Accent 1
-  explicit_format: true
+  explicit_format: true      # 既定は false。true でも null の色は塗らない
 spacing:
   line_ratio: 1.38           # 大きくすると早めに分割される
-  list_indent: 0.3           # null でテンプレートのインデントを継承
+  list_indent: 0.3           # 既定は null（テンプレートのインデントを継承）
 options:
   auto_split: true
   shrink_steps: 2            # 分割前に何段階フォントを縮めるか（1 段 = 8%）
