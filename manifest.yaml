@@ -1,4 +1,4 @@
-version: 0.0.4
+version: 0.0.5
 type: plugin
 author: masayukikiyota
 name: md2ppt
@@ -20,7 +20,7 @@ plugins:
   tools:
     - provider/md2ppt.yaml
 meta:
-  version: 0.0.4
+  version: 0.0.5
   arch:
     - amd64
     - arm64

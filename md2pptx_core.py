@@ -59,12 +59,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "placeholders": {"title": 0, "subtitle": 1, "body": 1},
     # 手動レイアウト時の描画領域（inch）。null は本文プレースホルダから自動取得
     "body_area": {"left": None, "top": None, "width": None, "height": None},
-    # null にした書体は指定せず、スライドマスターのフォントをそのまま使う。
+    # null は「指定しない」。既定では 4 つとも null で、書体を一切書き込まず
+    # スライドマスター（テーマ）のフォントをそのまま使う。
     "fonts": {
-        "latin": "Calibri",
-        "eastasian": "Yu Gothic",
-        "code": "Consolas",
-        "code_eastasian": "MS Gothic",
+        "latin": None,
+        "eastasian": None,
+        "code": None,
+        "code_eastasian": None,
     },
     "sizes": {
         "title": 32,
@@ -83,29 +84,35 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "page_number": 10,
         "min_body": 10,                 # 収まらないときの下限
     },
+    # null は「指定しない」。その書式を書き込まないので、文字はテーマの色を
+    # 継承し、図形・表はテーマ／表スタイルの既定書式のままになる。
+    # 既定ではすべて null ＝ テンプレートの配色をそのまま使う。
     "colors": {
-        "text": "1F2430",
-        "heading": "1E2A44",
-        "accent": "1E6F8E",
-        "muted": "6B7280",
-        "code_text": "24292F",
-        "code_bg": "F3F4F6",
-        "quote_text": "4A5568",
-        "quote_bar": "1E6F8E",
-        "table_header_bg": "1E2A44",
-        "table_header_text": "FFFFFF",
-        "table_band_bg": "F2F4F7",
-        "table_text": "1F2430",
-        "table_border": "C9D2DC",
+        "text": None,
+        "heading": None,
+        "accent": None,
+        "muted": None,
+        "code_text": None,
+        "code_bg": None,
+        "quote_text": None,
+        "quote_bar": None,
+        "table_header_bg": None,
+        "table_header_text": None,
+        "table_band_bg": None,
+        "table_body_bg": None,          # 帯にならない行の地色
+        "table_text": None,
+        "table_border": None,
     },
     "table": {
-        # PowerPoint 組み込みスタイル ID（テンプレート側のスタイルを使うなら null）
-        "style_id": "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}",  # Medium Style 2 - Accent 1
+        # PowerPoint 組み込みスタイル ID。既定の null はテンプレート側の表スタイル。
+        # 例: "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"（Medium Style 2 - Accent 1）
+        "style_id": None,
         "first_row_header": True,
         "banding": True,
-        # true にすると colors.table_* で明示的に塗る（どの環境でも同じ見た目）
-        # false にするとテンプレート/スタイル側の書式に任せる
-        "explicit_format": True,
+        # 既定の false はテンプレート／表スタイル側の書式に任せる。
+        # true にすると colors.table_* で明示的に塗る（どの環境でも同じ見た目）。
+        # ただし塗るのは色を書いた項目だけで、null の項目は塗らない。
+        "explicit_format": False,
         "min_row_height": 0.32,   # inch
         "cell_margin": 0.06,      # inch
     },
@@ -115,9 +122,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "block_gap": 8,          # pt
         "para_space_after": 6,   # pt
         "line_ratio": 1.38,
-        # 箇条書きのインデント（inch）。null にするとテンプレートの設定を継承
-        "list_indent": 0.3,
-        "list_hanging": 0.3,
+        # 箇条書きのインデント（inch）。既定の null はテンプレートの設定を継承
+        "list_indent": None,
+        "list_hanging": None,
     },
     "options": {
         "auto_split": True,               # 収まらない場合に続きスライドを作る
@@ -491,6 +498,15 @@ def rgb(hexstr: str) -> RGBColor:
     return RGBColor.from_string(hexstr.replace("#", "").upper())
 
 
+def opt_str(value: Any) -> str | None:
+    """null / 空文字を「指定なし」として None に揃える。
+
+    fonts / colors の各項目は null にできる。None になった項目は書式を
+    書き込まないので、テンプレート側の設定がそのまま残る。
+    """
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def set_typeface(rPr, latin: str | None, ea: str | None) -> None:
     """<a:latin> の直後に <a:ea>/<a:cs> を差し込む（日本語が明朝に落ちるのを防ぐ）。
 
@@ -522,9 +538,9 @@ class Painter:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         # 空欄（null / 空文字）は「指定しない」= マスターのフォントに任せる。
-        self.f = {k: (v if isinstance(v, str) and v.strip() else None)
-                  for k, v in cfg["fonts"].items()}
-        self.c = cfg["colors"]
+        self.f = {k: opt_str(v) for k, v in cfg["fonts"].items()}
+        # 色も同じ。null の項目は塗らないので、テンプレートの配色が残る。
+        self.c = {k: opt_str(v) for k, v in cfg["colors"].items()}
         self.s = cfg["sizes"]
 
     def style_run(self, run, *, size: float, bold=False, italic=False,
@@ -550,8 +566,11 @@ class Painter:
     def fill_runs(self, para, runs: Sequence[Run], *, size: float,
                   color: str | None = None, base_bold=False,
                   base_italic=False) -> None:
-        """Run 列を 1 段落に流し込む（改行 Run はソフト改行として扱う）。"""
-        color = color or self.c["text"]
+        """Run 列を 1 段落に流し込む（改行 Run はソフト改行として扱う）。
+
+        color=None は「文字色を指定しない」。呼び出し側は colors の値を
+        そのまま渡すので、null にした色はここで書き込まれず継承色になる。
+        """
         if not runs:
             para.add_run().text = ""
             return
@@ -626,6 +645,7 @@ class Renderer:
         self.cfg = cfg
         self.base_dir = base_dir          # 画像の相対パス基準（Markdown のあるフォルダ）
         self.paint = Painter(cfg)
+        self.c = self.paint.c             # null を None に均した配色
         self.prs = self._open_template(self._find_template(cfg["template"], config_dir, base_dir))
         self.layouts = {l.name: l for l in self.prs.slide_layouts}
         self.slide_w_pt = self.prs.slide_width / EMU_PER_PT
@@ -837,7 +857,7 @@ class Renderer:
         while size > 14 and wrapped_lines(text, size, width_pt) * size * 1.2 > height_pt:
             size -= 2
         self.paint.fill_runs(para, runs, size=size,
-                             color=color or self.cfg["colors"]["heading"], base_bold=True)
+                             color=color or self.c["heading"], base_bold=True)
         self.paint.no_bullet(para)
 
     def render_cover(self, spec: SlideSpec) -> None:
@@ -851,7 +871,7 @@ class Renderer:
                 para = tf.paragraphs[0]
                 self.paint.fill_runs(para, spec.subtitle,
                                      size=self.cfg["sizes"]["cover_subtitle"],
-                                     color=self.cfg["colors"]["muted"])
+                                     color=self.c["muted"])
                 self.paint.no_bullet(para)
             else:
                 self.drop(sub)
@@ -1003,7 +1023,7 @@ class Renderer:
                 para = new_para()
                 size = (sizes["h3"] if blk.level <= 3 else sizes["h4"]) * scale
                 self.paint.fill_runs(para, blk.runs, size=size,
-                                     color=p["colors"]["accent"], base_bold=True)
+                                     color=self.c["accent"], base_bold=True)
                 self.paint.no_bullet(para)
                 self.paint.indent(para, 0, hanging=False)
                 para.space_before = Pt(8 if started else 0)
@@ -1011,7 +1031,7 @@ class Renderer:
             elif isinstance(blk, Para):
                 para = new_para()
                 self.paint.fill_runs(para, blk.runs, size=sizes["paragraph"] * scale,
-                                     color=p["colors"]["text"])
+                                     color=self.c["text"])
                 self.paint.no_bullet(para)
                 self.paint.indent(para, 0, hanging=False)
                 para.space_after = Pt(p["spacing"]["para_space_after"])
@@ -1021,7 +1041,7 @@ class Renderer:
                     para.level = min(it.level, 4)
                     self.paint.fill_runs(para, it.runs,
                                          size=self.body_size(it.level) * scale,
-                                         color=p["colors"]["text"])
+                                         color=self.c["text"])
                     if it.ordered:
                         self.paint.auto_number(para)
                     else:
@@ -1033,7 +1053,7 @@ class Renderer:
                     para = new_para()
                     runs = sub.runs if isinstance(sub, (Para, Heading)) else []
                     self.paint.fill_runs(para, runs, size=sizes["quote"] * scale,
-                                         color=p["colors"]["quote_text"],
+                                         color=self.c["quote_text"],
                                          base_italic=p["quote"]["italic"])
                     self.paint.no_bullet(para)
                     self.paint.indent(para, 0, hanging=False)
@@ -1078,7 +1098,8 @@ class Renderer:
     def draw_rule(self, slide, x: float, y: float, w: float) -> None:
         from pptx.enum.shapes import MSO_CONNECTOR
         line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Pt(x), Pt(y), Pt(x + w), Pt(y))
-        line.line.color.rgb = rgb(self.cfg["colors"]["table_border"])
+        if self.c["table_border"]:
+            line.line.color.rgb = rgb(self.c["table_border"])
         line.line.width = Pt(1)
         line.shadow.inherit = False
 
@@ -1088,8 +1109,9 @@ class Renderer:
         if self.cfg["quote"]["bar"]:
             from pptx.enum.shapes import MSO_SHAPE
             bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Pt(x), Pt(y), Pt(3), Pt(h))
-            bar.fill.solid()
-            bar.fill.fore_color.rgb = rgb(self.cfg["colors"]["quote_bar"])
+            if self.c["quote_bar"]:       # null ならテーマの図形色のまま
+                bar.fill.solid()
+                bar.fill.fore_color.rgb = rgb(self.c["quote_bar"])
             bar.line.fill.background()
             bar.shadow.inherit = False
         box = self.textbox(slide, x + indent, y, w - indent, h)
@@ -1097,16 +1119,20 @@ class Renderer:
         for para in box.text_frame.paragraphs:
             for run in para.runs:
                 run.font.italic = self.cfg["quote"]["italic"]
-                run.font.color.rgb = rgb(self.cfg["colors"]["quote_text"])
+                if self.c["quote_text"]:
+                    run.font.color.rgb = rgb(self.c["quote_text"])
 
     def draw_code(self, slide, code: Code, x: float, y: float, w: float,
                   h: float, scale: float) -> None:
         from pptx.enum.shapes import MSO_SHAPE
         shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Pt(x), Pt(y), Pt(w), Pt(h))
         shape.adjustments[0] = 0.04
-        shape.fill.solid()
-        shape.fill.fore_color.rgb = rgb(self.cfg["colors"]["code_bg"])
-        shape.line.color.rgb = rgb(self.cfg["colors"]["table_border"])
+        # null の色は書き込まない＝テーマの図形書式（塗り・線）がそのまま残る。
+        if self.c["code_bg"]:
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = rgb(self.c["code_bg"])
+        if self.c["table_border"]:
+            shape.line.color.rgb = rgb(self.c["table_border"])
         shape.line.width = Pt(0.75)
         shape.shadow.inherit = False
         tf = shape.text_frame
@@ -1122,7 +1148,7 @@ class Renderer:
             self.paint.no_bullet(para)
             run = para.add_run()
             run.text = line if line else " "
-            self.paint.style_run(run, size=size, color=self.cfg["colors"]["code_text"], mono=True)
+            self.paint.style_run(run, size=size, color=self.c["code_text"], mono=True)
             para.line_spacing = 1.0
             para.space_after = Pt(0)
 
@@ -1133,7 +1159,7 @@ class Renderer:
             para = box.text_frame.paragraphs[0]
             self.paint.fill_runs(para, [Run(f"[画像が見つかりません: {img.src}]")],
                                  size=self.cfg["sizes"]["caption"],
-                                 color=self.cfg["colors"]["muted"])
+                                 color=self.c["muted"])
             self.paint.no_bullet(para)
             self.warnings.append(f"画像が見つかりません: {img.src}")
             return
@@ -1185,8 +1211,8 @@ class Renderer:
                 self.paint.fill_runs(
                     para, runs,
                     size=head_size if is_head else size,
-                    color=self.cfg["colors"]["table_header_text"] if is_head
-                    else self.cfg["colors"]["table_text"],
+                    color=self.c["table_header_text"] if is_head
+                    else self.c["table_text"],
                     base_bold=is_head,
                 )
                 align = tb.aligns[ci] if ci < len(tb.aligns) else "left"
@@ -1194,14 +1220,17 @@ class Renderer:
                                   "right": PP_ALIGN.RIGHT}.get(align, PP_ALIGN.LEFT)
 
     def fill_cell(self, cell, ri: int, is_head: bool) -> None:
-        c = self.cfg["colors"]
-        cell.fill.solid()
+        """明示的にセルを塗る。色が null のセルは塗らず表スタイルの書式を残す。"""
         if is_head:
-            cell.fill.fore_color.rgb = rgb(c["table_header_bg"])
+            color = self.c["table_header_bg"]
         elif self.cfg["table"]["banding"] and ri % 2 == 0:
-            cell.fill.fore_color.rgb = rgb(c["table_band_bg"])
+            color = self.c["table_band_bg"]
         else:
-            cell.fill.fore_color.rgb = rgb("FFFFFF")
+            color = self.c["table_body_bg"]
+        if not color:
+            return
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = rgb(color)
 
     @staticmethod
     def set_table_style(table, style_id: str) -> None:
@@ -1238,7 +1267,7 @@ class Renderer:
             self.paint.no_bullet(para)
             run = para.add_run()
             run.text = str(i)
-            self.paint.style_run(run, size=size, color=self.cfg["colors"]["muted"])
+            self.paint.style_run(run, size=size, color=self.c["muted"])
 
     def save(self, out: Path) -> None:
         self.prs.save(out)

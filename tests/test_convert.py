@@ -29,6 +29,22 @@ _PPTX_CT = ("application/vnd.openxmlformats-officedocument"
 failures: list[str] = []
 
 
+def _has_marl(pptx_bytes: bytes) -> bool:
+    """段落に marL（明示インデント）が書かれているか。
+
+    表のセル余白も <a:tcPr marL="..."> を持つので、段落の <a:pPr> だけを見る。
+    """
+    import io
+    import re
+
+    with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+        return any(
+            re.search(r'<a:pPr[^>]* marL="', z.read(n).decode("utf-8"))
+            for n in z.namelist()
+            if n.startswith("ppt/slides/slide")
+        )
+
+
 def check(label: str, cond: bool, detail: str = "") -> None:
     if cond:
         print(f"  ok   {label}")
@@ -353,8 +369,10 @@ layouts:
           f"({r18['slide_count']} vs {r['slide_count']})")
     check("typeface が 1 つも書かれない", typefaces(r18["pptx"]) == set(),
           str(typefaces(r18["pptx"])))
-    check("既定設定では typeface が書かれる", "Calibri" in typefaces(r2["pptx"]),
+    check("設定なし（既定）でも typeface は書かれない", typefaces(r2["pptx"]) == set(),
           str(sorted(typefaces(r2["pptx"]))))
+    check("明示指定すれば typeface が書かれる", "Calibri" in typefaces(r["pptx"]),
+          str(sorted(typefaces(r["pptx"]))))
 
     print("[18b] 一部だけ null にもできる")
     ea_only = """fonts:
@@ -377,6 +395,89 @@ layouts:
     r18c = u.convert(md, tpl, "t.pptx", blank_fonts)
     check("空文字も未指定扱い", typefaces(r18c["pptx"]) == set(),
           str(sorted(typefaces(r18c["pptx"]))))
+
+    print("[19] colors を null にすると色を塗らない")
+
+    def srgb(pptx_bytes: bytes) -> set[str]:
+        """スライドに書かれた固定色（srgbClr）を全部集める。"""
+        import io
+        import re
+
+        found: set[str] = set()
+        with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+            for name in z.namelist():
+                if name.startswith("ppt/slides/slide"):
+                    found |= set(re.findall(r'srgbClr val="([0-9A-Fa-f]{6})"',
+                                            z.read(name).decode("utf-8")))
+        return found
+
+    # fixtures/config.yaml は 14 色すべてを明示している。
+    explicit = u.parse_config_yaml(CONFIG.read_text(encoding="utf-8"))["colors"]
+    color_keys = sorted(u.core.DEFAULT_CONFIG["colors"])
+    check("既定値は 14 色すべて null",
+          set(u.core.DEFAULT_CONFIG["colors"].values()) == {None},
+          str(u.core.DEFAULT_CONFIG["colors"]))
+    check("fixtures/config.yaml は 14 色すべてを明示",
+          sorted(explicit) == color_keys, str(sorted(explicit)))
+
+    def colors_yaml(overrides: dict) -> str:
+        merged = {**explicit, **overrides}
+        body = "".join(
+            f"  {k}: " + ("null" if v is None else f'"{v}"') + "\n"
+            for k, v in merged.items()
+        )
+        # 表のセルを塗る経路（fill_cell）も通したいので明示的に有効にする。
+        return "colors:\n" + body + "table:\n  explicit_format: true\n"
+
+    check("設定なし（既定）では固定色が書かれない", srgb(r2["pptx"]) == set(),
+          str(sorted(srgb(r2["pptx"]))))
+    check("明示指定すれば固定色が書かれる",
+          set(explicit.values()) <= srgb(r["pptx"]),
+          str(sorted(set(explicit.values()) - srgb(r["pptx"]))))
+
+    no_colors = colors_yaml({k: None for k in color_keys})
+    r19 = u.convert(md, tpl, "t.pptx", no_colors)
+    check("null colors converts", not r19["warnings"], str(r19["warnings"]))
+    check("同じ枚数になる", r19["slide_count"] == r["slide_count"],
+          f"({r19['slide_count']} vs {r['slide_count']})")
+    check("固定色が 1 つも残らない",
+          not (srgb(r19["pptx"]) & set(explicit.values())),
+          str(sorted(srgb(r19["pptx"]))))
+
+    print("[19b] 一部だけ null にもできる")
+    # rgb() を直接呼んでいた図形（コード枠・引用バー・罫線・表）も落ちないこと。
+    for key in color_keys:
+        try:
+            one = u.convert(md, tpl, "t.pptx", colors_yaml({key: None}))
+            # 同じ色を使う別のキーが残っていれば、その色は消えなくてよい。
+            shared = any(v == explicit[key] for k, v in explicit.items() if k != key)
+            check(f"{key}: null で色が消える",
+                  shared or explicit[key] not in srgb(one["pptx"]),
+                  str(sorted(srgb(one["pptx"]))))
+        except Exception as e:                                  # noqa: BLE001
+            check(f"{key}: null で色が消える", False, f"{type(e).__name__}: {e}")
+
+    blank_colors = "colors:\n" + "".join(f'  {k}: ""\n' for k in color_keys)
+    r19c = u.convert(md, tpl, "t.pptx", blank_colors)
+    check("空文字も未指定扱い",
+          not (srgb(r19c["pptx"]) & set(explicit.values())),
+          str(sorted(srgb(r19c["pptx"]))))
+
+    r19d = u.convert(md, tpl, "t.pptx", no_fonts + no_colors)
+    check("fonts と colors の null を併用できる",
+          typefaces(r19d["pptx"]) == set()
+          and not (srgb(r19d["pptx"]) & set(explicit.values())))
+
+    print("[19c] 既定では表スタイル ID と箇条書きインデントも指定しない")
+    check("table.style_id の既定は null",
+          u.core.DEFAULT_CONFIG["table"]["style_id"] is None)
+    check("spacing.list_indent の既定は null",
+          u.core.DEFAULT_CONFIG["spacing"]["list_indent"] is None)
+    check("table.explicit_format の既定は false",
+          u.core.DEFAULT_CONFIG["table"]["explicit_format"] is False)
+    check("既定では marL を書き込まない",
+          not _has_marl(r2["pptx"]), "marL が書かれている")
+    check("明示指定すれば marL を書き込む", _has_marl(r["pptx"]))
 
     print()
     if failures:
