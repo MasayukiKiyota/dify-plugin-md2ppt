@@ -235,6 +235,56 @@ def _validate_config(data: dict, text: str) -> None:
                 f"記述してください{_fullwidth_hint(text)}。"
                 f"受け取った値（{type(data[key]).__name__}）: {str(data[key])[:60]!r}"
             )
+    _validate_sizes(data, text)
+
+
+def _validate_sizes(data: dict, text: str) -> None:
+    """sizes の値が数値か null かを確かめる。
+
+    core 側の opt_size() も不正値を「指定なし」に倒して自衛するが、Dify 経由の
+    場合はここで具体的に指摘したほうが直しやすい。
+    """
+    sizes = data.get("sizes") or {}
+    known = set(core.DEFAULT_CONFIG["sizes"])
+    unknown = [k for k in sizes if k not in known]
+    if unknown:
+        raise Md2pptError(
+            f"config_yaml の sizes に不明なキーがあります: "
+            f"{', '.join(map(str, unknown))}{_fullwidth_hint(text)}。"
+            f"指定できるのは {', '.join(sorted(known))} です。"
+        )
+    for key, value in sizes.items():
+        # body だけはレベル別のリストを書ける。
+        items = value if key == "body" and isinstance(value, list) else [value]
+        for item in items:
+            if item is None or (isinstance(item, str) and not item.strip()):
+                continue                     # null / 空欄は「指定なし」
+            # bool は int の一種なので、yes / no を書かれると素通りしてしまう。
+            if isinstance(item, bool) or not _is_number(item):
+                raise Md2pptError(
+                    f"config_yaml の sizes.{key} は数値か null で"
+                    f"指定してください{_fullwidth_hint(text)}。"
+                    f"受け取った値（{type(item).__name__}）: {str(item)[:40]!r}"
+                )
+            if not core.MIN_FONT_SIZE <= float(item) <= core.MAX_FONT_SIZE:
+                raise Md2pptError(
+                    f"config_yaml の sizes.{key} は "
+                    f"{core.MIN_FONT_SIZE:g}〜{core.MAX_FONT_SIZE:g} の範囲で"
+                    f"指定してください（受け取った値: {item}）。"
+                )
+
+
+def _is_number(value) -> bool:
+    """数値、または数値として読める文字列か。"""
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        try:
+            float(value.strip())
+            return True
+        except ValueError:
+            return False
+    return False
 
 
 def build_config(config_yaml: str | None, detected: dict | None = None) -> dict:
@@ -396,6 +446,7 @@ def convert(
             },
             "detected": detected,
             "layouts_used": dict(cfg["layouts"]),
+            "language_used": renderer.applied_language,
         }
 
 
@@ -441,6 +492,9 @@ def describe_presentation(prs: Presentation, name: str) -> dict[str, Any]:
         "layout_count": len(prs.slide_layouts),
         "layout_names": [l["name"] for l in layouts],
         "layouts": layouts,
+        # テンプレートに書かれている校正言語（options.language: auto の既定値）
+        "language": core.detect_language(prs),
+        "language_counts": core.count_languages(prs),
     }
 
 
@@ -467,6 +521,16 @@ def _aspect(w: float, h: float) -> str:
     return f"{r:.2f}:1"
 
 
+def _language_detail(info: dict[str, Any]) -> str:
+    """校正言語の内訳。テンプレートに lang が無ければ既定値だと明示する。"""
+    counts = info.get("language_counts") or {}
+    if not counts:
+        return f"（テンプレートに lang が無いため既定の {core.DEFAULT_LANGUAGE}）"
+    inner = ", ".join(f"{k} {v}" for k, v in
+                      sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    return f"（{inner}）"
+
+
 def format_template_report(info: dict[str, Any]) -> str:
     """inspect_template.describe() と同じ体裁の人間可読テキスト。"""
 
@@ -478,6 +542,7 @@ def format_template_report(info: dict[str, Any]) -> str:
         f"スライドサイズ: {num(info['slide_width_in'])}in x "
         f"{num(info['slide_height_in'])}in ({info['aspect_ratio']})",
         f"スライドマスタ数: {info['master_count']} / レイアウト数: {info['layout_count']}",
+        f"校正言語: {info['language']}{_language_detail(info)}",
         "",
     ]
     for layout in info["layouts"]:
@@ -604,6 +669,8 @@ def detect_config(info: dict[str, Any]) -> dict[str, Any]:
             "subtitle": sub_ph["idx"] if sub_ph else 1,
             "body": body_ph["idx"] if body_ph else 1,
         },
+        # 既定の "auto" を、テンプレートから読み取った実際の言語に置き換える。
+        "options": {"language": info["language"]},
     }
 
 

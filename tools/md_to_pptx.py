@@ -82,6 +82,7 @@ class MdToPptxTool(Tool):
             "template_name": template_name,
             "meta": result["meta"],
             "layouts_used": result["layouts_used"],
+            "language_used": result["language_used"],
             "outline": result["outline"],
             "warnings": warnings,
         })

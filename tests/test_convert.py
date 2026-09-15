@@ -45,6 +45,127 @@ def _has_marl(pptx_bytes: bytes) -> bool:
         )
 
 
+def _rpr_tags(pptx_bytes: bytes, *prefixes: str) -> list[str]:
+    """lang / noProof を持てる要素の開始タグを集める。
+
+    prefixes を渡すとそのパートだけに絞る（"ppt/slides/" など）。
+    """
+    import io
+    import re
+
+    found: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+        for name in z.namelist():
+            if not name.endswith(".xml"):
+                continue
+            if prefixes and not name.startswith(prefixes):
+                continue
+            xml = z.read(name).decode("utf-8", "ignore")
+            found += re.findall(r"<a:(?:rPr|endParaRPr|defRPr)\b[^>]*>", xml)
+    return found
+
+
+def _attr_values(tags: list[str], attr: str) -> set[str]:
+    import re
+
+    pattern = re.compile(r'\b%s="([^"]*)"' % attr)
+    return {m.group(1) for m in map(pattern.search, tags) if m}
+
+
+def langs(pptx_bytes: bytes, *prefixes: str) -> set[str]:
+    """書き込まれている lang の値。"""
+    return _attr_values(_rpr_tags(pptx_bytes, *prefixes), "lang")
+
+
+def noproofs(pptx_bytes: bytes, *prefixes: str) -> set[str]:
+    """書き込まれている noProof の値。"""
+    return _attr_values(_rpr_tags(pptx_bytes, *prefixes), "noProof")
+
+
+def unlabeled_rprs(pptx_bytes: bytes) -> int:
+    """lang を持たない rPr / endParaRPr / defRPr の数。0 が理想。"""
+    import re
+
+    return sum(1 for t in _rpr_tags(pptx_bytes) if not re.search(r'\blang="', t))
+
+
+def strip_langs(pptx_bytes: bytes) -> bytes:
+    """lang 属性を全部落とした .pptx を作る（フォールバック検証用）。
+
+    altLang は残す（直前が "t" なので \slang= には一致しない）。
+    """
+    import io
+    import re
+
+    src = io.BytesIO(pptx_bytes)
+    out = io.BytesIO()
+    with zipfile.ZipFile(src) as zf:
+        entries = [(i, zf.read(i.filename)) for i in zf.infolist()]
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as w:
+        for info, data in entries:
+            if info.filename.endswith(".xml"):
+                data = re.sub(r'\slang="[^"]*"', "",
+                              data.decode("utf-8", "ignore")).encode("utf-8")
+            w.writestr(info, data)
+    return out.getvalue()
+
+
+def run_sizes(pptx_bytes: bytes) -> set[float]:
+    """スライドの run に書かれた文字サイズ（pt）。
+
+    a:defRPr / a:endParaRPr は継承の定義なので数えない。実際に描かれる
+    テキストが持つ <a:rPr sz="..."> だけを見る。
+    """
+    import io
+    import re
+
+    found: set[float] = set()
+    with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+        for name in z.namelist():
+            if not name.startswith("ppt/slides/slide"):
+                continue
+            xml = z.read(name).decode("utf-8", "ignore")
+            for tag in re.findall(r"<a:rPr\b[^>]*>", xml):
+                m = re.search(r'\bsz="(\d+)"', tag)
+                if m:
+                    found.add(int(m.group(1)) / 100.0)
+    return found
+
+
+def unsized_runs(pptx_bytes: bytes) -> int:
+    """sz を持たない run の数（＝テンプレートの文字サイズを継承する run）。"""
+    import io
+    import re
+
+    total = 0
+    with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+        for name in z.namelist():
+            if not name.startswith("ppt/slides/slide"):
+                continue
+            xml = z.read(name).decode("utf-8", "ignore")
+            total += sum(1 for t in re.findall(r"<a:rPr\b[^>]*>", xml)
+                         if not re.search(r'\bsz="', t))
+    return total
+
+
+def strip_sizes(pptx_bytes: bytes) -> bytes:
+    """sz 属性を全部落とした .pptx を作る（フォールバック検証用）。"""
+    import io
+    import re
+
+    src = io.BytesIO(pptx_bytes)
+    out = io.BytesIO()
+    with zipfile.ZipFile(src) as zf:
+        entries = [(i, zf.read(i.filename)) for i in zf.infolist()]
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as w:
+        for info, data in entries:
+            if info.filename.endswith(".xml"):
+                data = re.sub(r'\ssz="[^"]*"', "",
+                              data.decode("utf-8", "ignore")).encode("utf-8")
+            w.writestr(info, data)
+    return out.getvalue()
+
+
 def check(label: str, cond: bool, detail: str = "") -> None:
     if cond:
         print(f"  ok   {label}")
@@ -478,6 +599,172 @@ layouts:
     check("既定では marL を書き込まない",
           not _has_marl(r2["pptx"]), "marL が書かれている")
     check("明示指定すれば marL を書き込む", _has_marl(r["pptx"]))
+
+    print("[20] 校正言語をテンプレートに合わせ、校正をオフにする")
+    # fixtures/template.pptx は python-pptx 既定テンプレート由来で全部 en-US。
+    # 設定なしの変換がそれを写すことが「テンプレートを見ている」証拠になる。
+    check("設定なしでもスライドに lang が書かれる",
+          langs(r2["pptx"], "ppt/slides/") == {"en-US"},
+          str(sorted(langs(r2["pptx"], "ppt/slides/"))))
+    check("ドキュメント全体が同じ言語になる",
+          langs(r2["pptx"]) == {"en-US"}, str(sorted(langs(r2["pptx"]))))
+    check("ノートとノートマスターにも入る",
+          langs(r2["pptx"], "ppt/notesSlides/", "ppt/notesMasters/") == {"en-US"},
+          str(sorted(langs(r2["pptx"], "ppt/notesSlides/", "ppt/notesMasters/"))))
+    check("lang を持たない rPr が 1 つも無い",
+          unlabeled_rprs(r2["pptx"]) == 0, str(unlabeled_rprs(r2["pptx"])))
+    check("既定で noProof がオン", noproofs(r2["pptx"]) == {"1"},
+          str(sorted(noproofs(r2["pptx"]))))
+    check("language_used に判定結果が返る", r2["language_used"] == "en-US",
+          str(r2["language_used"]))
+
+    print("[20b] config で指定した言語が勝つ")
+    r20 = u.convert(md, tpl, "t.pptx", "options:\n  language: ja-JP\n")
+    check("全パートが ja-JP になる", langs(r20["pptx"]) == {"ja-JP"},
+          str(sorted(langs(r20["pptx"]))))
+    check("警告なし・枚数も変わらない",
+          not r20["warnings"] and r20["slide_count"] == r2["slide_count"],
+          str(r20["warnings"]))
+    check("fixtures/config.yaml でも ja-JP になる",
+          langs(r["pptx"]) == {"ja-JP"}, str(sorted(langs(r["pptx"]))))
+
+    print("[20c] no_proof の 3 値")
+    r20c = u.convert(md, tpl, "t.pptx", "options:\n  no_proof: false\n")
+    check("false なら noProof=0", noproofs(r20c["pptx"]) == {"0"},
+          str(sorted(noproofs(r20c["pptx"]))))
+    r20c2 = u.convert(md, tpl, "t.pptx", "options:\n  no_proof: null\n")
+    check("null なら noProof を書かない", noproofs(r20c2["pptx"]) == set(),
+          str(sorted(noproofs(r20c2["pptx"]))))
+    check("null でも lang は書く", langs(r20c2["pptx"], "ppt/slides/") == {"en-US"})
+
+    print("[20d] language: null なら書き込まない")
+    r20d = u.convert(md, tpl, "t.pptx", "options:\n  language: null\n")
+    check("スライドに lang が無い", langs(r20d["pptx"], "ppt/slides/") == set(),
+          str(sorted(langs(r20d["pptx"], "ppt/slides/"))))
+    check("レイアウトはテンプレートのまま",
+          langs(r20d["pptx"], "ppt/slideLayouts/") == {"en-US"})
+    check("language_used は None", r20d["language_used"] is None)
+    r20d2 = u.convert(md, tpl, "t.pptx",
+                      "options:\n  language: null\n  no_proof: null\n")
+    check("両方 null なら lang も noProof も書かない",
+          langs(r20d2["pptx"], "ppt/slides/") == set()
+          and noproofs(r20d2["pptx"]) == set())
+
+    print("[20e] テンプレートに lang が無ければ日本語にする")
+    bare = strip_langs(tpl)
+    check("剥がしたテンプレートに lang が無い", langs(bare) == set(),
+          str(sorted(langs(bare))))
+    r20e = u.convert(md, bare, "t.pptx", None)
+    check("フォールバックで ja-JP になる", langs(r20e["pptx"]) == {"ja-JP"},
+          str(sorted(langs(r20e["pptx"]))))
+    from pptx import Presentation  # noqa: E402
+    import io as _io  # noqa: E402
+    check("detect_language がテンプレートを読む",
+          u.core.detect_language(Presentation(_io.BytesIO(tpl))) == "en-US")
+    check("lang が無ければ既定値",
+          u.core.detect_language(Presentation(_io.BytesIO(bare)))
+          == u.core.DEFAULT_LANGUAGE)
+
+    print("[20f] 既定値と不正な指定")
+    check("options.language の既定は auto",
+          u.core.DEFAULT_CONFIG["options"]["language"] == "auto")
+    check("options.no_proof の既定は true",
+          u.core.DEFAULT_CONFIG["options"]["no_proof"] is True)
+    check("自動判定が detected に載る",
+          u.detect_config(u.analyze_template(tpl, "t.pptx"))["options"]["language"]
+          == "en-US")
+    r20f = u.convert(md, tpl, "t.pptx", "options:\n  language: 日本語\n")
+    check("不正な言語タグは警告を出してテンプレートの言語に戻す",
+          langs(r20f["pptx"]) == {"en-US"} and len(r20f["warnings"]) == 1,
+          str(r20f["warnings"]))
+
+    print("[21] 文字サイズもテンプレートに任せる")
+    check("既定値は 15 項目すべて null",
+          set(u.core.DEFAULT_CONFIG["sizes"].values()) == {None},
+          str(u.core.DEFAULT_CONFIG["sizes"]))
+    # 小見出しも縮小も無く 1 枚に収まる Markdown なら、sz は 1 つも書かれない。
+    r21 = u.convert("## A\n\n- x\n", tpl, "t.pptx", None)
+    check("最小の原稿では sz を 1 つも書かない", run_sizes(r21["pptx"]) == set(),
+          str(sorted(run_sizes(r21["pptx"]))))
+    check("継承する run がちゃんとある", unsized_runs(r21["pptx"]) > 0)
+    check("既定でも大半の run は sz を持たない", unsized_runs(r2["pptx"]) > 0,
+          str(unsized_runs(r2["pptx"])))
+    check("明示指定すれば書かれる", 32.0 in run_sizes(r["pptx"]),
+          str(sorted(run_sizes(r["pptx"]))))
+    check("警告なし", not r2["warnings"], str(r2["warnings"]))
+
+    print("[21b] テンプレートの実効サイズを読む")
+    from pptx import Presentation as _Prs  # noqa: E402
+    import io as _io2  # noqa: E402
+    prs = _Prs(_io2.BytesIO(tpl))
+    master = prs.slide_masters[0]
+    check("titleStyle lvl1 = 44",
+          u.core.master_style_size(master, "titleStyle", 1) == 44.0)
+    check("bodyStyle lvl1-5 = 32/28/24/20/20",
+          [u.core.master_style_size(master, "bodyStyle", n) for n in range(1, 6)]
+          == [32.0, 28.0, 24.0, 20.0, 20.0])
+    check("otherStyle lvl1 = 18",
+          u.core.master_style_size(master, "otherStyle", 1) == 18.0)
+    check("defaultTextStyle = 18", u.core.default_text_size(prs) == 18.0)
+    章扉 = next(l for l in master.slide_layouts if l.name == "章扉")
+    check("章扉のタイトルは ph 側で 40 に上書きされている",
+          u.core.placeholder_size(章扉, 0) == 40.0)
+    本文 = next(l for l in master.slide_layouts if l.name == "本文")
+    check("本文レイアウトは ph 側の上書きを持たない",
+          u.core.placeholder_size(本文, 1) is None)
+
+    print("[21c] 対応物が無い項目はテンプレートの本文サイズから算出する")
+    # 手動レイアウトの図形はテンプレートの既定テキスト（18pt）を継承するので、
+    # そこから算出した値は現行の既定値とちょうど一致する。
+    sizes2 = run_sizes(r2["pptx"])
+    check("ページ番号は 10pt", 10.0 in sizes2, str(sorted(sizes2)))
+    check("コードは 12pt", 12.0 in sizes2, str(sorted(sizes2)))
+    check("小見出しは本文より大きい", 20.0 in sizes2, str(sorted(sizes2)))
+
+    print("[21d] 個別に null / 明示ができる")
+    for key in sorted(u.core.DEFAULT_CONFIG["sizes"]):
+        try:
+            one = u.convert(md, tpl, "t.pptx", f"sizes:\n  {key}: null\n")
+            check(f"{key}: null で変換できる", not one["warnings"], str(one["warnings"]))
+        except Exception as e:                                  # noqa: BLE001
+            check(f"{key}: null で変換できる", False, f"{type(e).__name__}: {e}")
+    for body in ("null", "[18, null, 14]", "18", "[]"):
+        rb = u.convert(md, tpl, "t.pptx", f"sizes:\n  body: {body}\n")
+        check(f"body: {body} が通る", not rb["warnings"], str(rb["warnings"]))
+    rq = u.convert(md, tpl, "t.pptx", 'sizes:\n  quote: ""\n')
+    check("空文字も未指定扱い", not rq["warnings"], str(rq["warnings"]))
+    rt = u.convert(md, tpl, "t.pptx", "sizes:\n  table: 9\n")
+    check("明示した値が書かれる", 9.0 in run_sizes(rt["pptx"]),
+          str(sorted(run_sizes(rt["pptx"]))))
+
+    print("[21e] テンプレートに sz が無ければ組み込みの既定に落ちる")
+    bare_sz = strip_sizes(tpl)
+    r21e = u.convert(md, bare_sz, "t.pptx", None)
+    check("sz を剥がしても変換できる", not r21e["warnings"], str(r21e["warnings"]))
+    check("フォールバック（18pt 基準）で描かれる",
+          {10.0, 12.0} <= run_sizes(r21e["pptx"]),
+          str(sorted(run_sizes(r21e["pptx"]))))
+
+    print("[21f] 不正な値は分かりやすく落とす")
+    for label, bad in (
+        ("文字列", "sizes:\n  title: 大きめ\n"),
+        ("範囲外", "sizes:\n  title: 0\n"),
+        ("真偽値", "sizes:\n  title: yes\n"),
+        ("タイポ", "sizes:\n  titel: 32\n"),
+        ("リストの中の文字列", "sizes:\n  body: [18, 大]\n"),
+    ):
+        try:
+            u.convert(md, tpl, "t.pptx", bad)
+            check(f"{label} はエラー", False, "(no exception)")
+        except u.Md2pptError as e:
+            check(f"{label} はエラー", True)
+            print(f"       -> {e}")
+
+    print("[21g] fonts / colors / sizes の null を併用できる")
+    r21g = u.convert(md, tpl, "t.pptx", no_fonts + no_colors)
+    check("3 つとも既定 null で変換できる",
+          typefaces(r21g["pptx"]) == set() and not r21g["warnings"],
+          str(r21g["warnings"]))
 
     print()
     if failures:

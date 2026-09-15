@@ -143,6 +143,8 @@ def main() -> int:
     report = by_type(msgs, TEXT)[0].message.text
     check("report names the template", "template.pptx" in report)
     check("report lists 表紙", "表紙" in report)
+    check("判定した校正言語を返す", j["language"] == "en-US", str(j.get("language")))
+    check("report に校正言語が出る", "校正言語" in report)
 
     print("[7] inspect_template with emit_config")
     msgs = run(InspectTemplateTool, {"template_file": tpl_file, "emit_config": True})
@@ -156,6 +158,10 @@ def main() -> int:
     check("guessed layouts",
           j["suggested_config"]["layouts"]["content"] == "本文",
           str(j["suggested_config"]))
+    check("校正言語も config に乗る",
+          j["suggested_config"]["options"]["language"] == "en-US",
+          str(j["suggested_config"].get("options")))
+    check("emit した YAML に language がある", "language:" in j["config_yaml"])
 
     print("[8] emitted config feeds md_to_pptx unchanged")
     emitted = j["config_yaml"]
@@ -227,6 +233,32 @@ def main() -> int:
     msgs = run(InspectTemplateTool, {"template_file": tpl_file,
                                      "emit_config": "true"})
     check("文字列 'true' は有効", len(by_type(msgs, BLOB)) == 1)
+
+    print("[9b] プラグインの YAML が全部読める")
+    # ここが壊れると dify plugin package が
+    #   "mapping values are not allowed in this context" で落ちる。
+    # 説明文に ": "（コロン＋空白）を素で書くと平文スカラーが切れるのが典型。
+    import yaml  # noqa: E402
+
+    root = Path(__file__).resolve().parent.parent
+    yaml_files = sorted(
+        list(root.glob("*.yaml")) + list(root.glob("provider/*.yaml"))
+        + list(root.glob("tools/*.yaml"))
+    )
+    check("YAML が 4 つ以上ある", len(yaml_files) >= 4, str(len(yaml_files)))
+    for path in yaml_files:
+        rel = path.relative_to(root).as_posix()
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+            check(f"{rel} が読める", isinstance(loaded, dict))
+        except yaml.YAMLError as e:                             # noqa: PERF203
+            check(f"{rel} が読める", False, str(e).splitlines()[0])
+
+    manifest = yaml.safe_load((root / "manifest.yaml").read_text(encoding="utf-8"))
+    for rel in manifest["plugins"]["tools"]:
+        spec = yaml.safe_load((root / rel).read_text(encoding="utf-8"))
+        check(f"{rel} に tools 定義がある",
+              isinstance(spec.get("tools"), list) and bool(spec["tools"]))
 
     print("[9] inspect_template: missing file is a clean error")
     msgs = run(InspectTemplateTool, {})

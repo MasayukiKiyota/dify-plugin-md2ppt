@@ -66,6 +66,7 @@ class InspectTemplateTool(Tool):
             "master_count": info["master_count"],
             "layout_count": info["layout_count"],
             "layout_names": info["layout_names"],
+            "language": info["language"],
             "layouts": info["layouts"],
             "suggested_config": suggested,
             "config_yaml": config_yaml,

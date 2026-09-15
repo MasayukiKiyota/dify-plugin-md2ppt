@@ -51,9 +51,10 @@ parameters:
       en_US: Mapping config (YAML)
       ja_JP: マッピング設定（YAML）
     human_description:
-      en_US: Usually unnecessary - the layouts are detected automatically. Use this only to override the detection, or to change fonts, sizes, colors and options. Anything you leave out keeps its auto-detected or default value. By default nothing is overridden: fonts, colours, the table style and the list indent are all left unset, and table cells are not painted, so the template's own theme is used. Fill in only what you want to pin down.
-      ja_JP: 通常は不要です（レイアウトは自動判定されます）。判定結果を上書きしたい場合や、フォント・サイズ・色・オプションを変えたい場合にのみ指定します。書かなかった項目は自動判定値・既定値のままです。 既定では書体・色・表スタイル・字下げをいずれも上書きせず、表のセルも塗らないため、テンプレート（スライドマスター／テーマ）の設定がそのまま出ます。固定したい項目だけ書いてください。
-    llm_description: Optional YAML configuration. Normally omit it - the layouts are auto-detected from the template. Supply it only to override the detection or to change presentation settings (keys - layouts, placeholders, fonts, sizes, colors, table, quote, image, spacing, options). Values given here always win over the auto-detected ones; omitted keys keep their auto-detected or default value. The defaults for fonts, colors, table.style_id and spacing.list_indent are all null, meaning "do not set this", and table.explicit_format defaults to false, so the template's own fonts, colours, table style and indentation are kept unless you override them.
+      en_US: >-
+        Usually unnecessary - the layouts are detected automatically. Use this only to override the detection, or to change fonts, sizes, colors and options. Anything you leave out keeps its auto-detected or default value. By default nothing is overridden: fonts, font sizes, colours, the table style and the list indent are all left unset, and table cells are not painted, so the template's own theme is used. The deck's proofing language is copied from the template and spell/grammar checking is turned off. Fill in only what you want to pin down.
+      ja_JP: 通常は不要です（レイアウトは自動判定されます）。判定結果を上書きしたい場合や、フォント・サイズ・色・オプションを変えたい場合にのみ指定します。書かなかった項目は自動判定値・既定値のままです。 既定では書体・文字サイズ・色・表スタイル・字下げをいずれも上書きせず、表のセルも塗らないため、テンプレート（スライドマスター／テーマ）の設定がそのまま出ます。校正言語はテンプレートから読み取って全体に適用し、スペルチェックと文章校正はオフにします。固定したい項目だけ書いてください。
+    llm_description: Optional YAML configuration. Normally omit it - the layouts are auto-detected from the template. Supply it only to override the detection or to change presentation settings (keys - layouts, placeholders, fonts, sizes, colors, table, quote, image, spacing, options). Values given here always win over the auto-detected ones; omitted keys keep their auto-detected or default value. The defaults for fonts, sizes, colors, table.style_id and spacing.list_indent are all null, meaning "do not set this", and table.explicit_format defaults to false, so the template's own fonts, text sizes, colours, table style and indentation are kept unless you override them. Each sizes value is a number in points or null; sizes.body may also be a list of per-level numbers. options.language defaults to "auto" (copy the proofing language found in the template; falls back to ja-JP) and accepts a BCP-47 tag such as "ja-JP" or null to write no language at all; options.no_proof defaults to true, which turns off spell and grammar checking.
     form: form
   - name: file_name
     type: string
@@ -97,6 +98,9 @@ output_schema:
     layouts_used:
       type: object
       description: The template layout name actually used for each slide kind (title, section, content, table, blank). These are auto-detected from the template unless config_yaml overrides them.
+    language_used:
+      type: string
+      description: The proofing language written into the deck, detected from the template unless options.language overrides it. Null when options.language is null.
     outline:
       type: string
       description: Human-readable list of the generated slides.

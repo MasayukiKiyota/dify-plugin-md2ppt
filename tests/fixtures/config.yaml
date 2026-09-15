@@ -39,6 +39,8 @@ fonts:
   code_eastasian: MS Gothic
 
 sizes:
+  # null にするとその項目は書き込まず、テンプレート（レイアウトのプレースホルダ
+  # → スライドマスター）の文字サイズをそのまま使います。既定は 15 項目すべて null。
   title: 32               # 本文スライドのタイトル
   section_title: 40       # 章扉
   cover_title: 40
@@ -53,7 +55,7 @@ sizes:
   quote: 15
   caption: 11
   page_number: 10
-  min_body: 10
+  min_body: 10            # 自動縮小の下限。null なら組み込みの 10pt
 
 colors:
   # null（または空欄）にするとその色は塗らず、テンプレートの配色をそのまま使う
@@ -110,3 +112,5 @@ options:
   section_slides: true            # false なら H1 も通常スライドに
   notes_marker: notes             # <!-- notes: ... --> をスピーカーノートへ
   table_header_repeat: true       # 表を分割したらヘッダ行を繰り返す
+  language: "ja-JP"               # 校正言語。auto でテンプレート追随、null で書かない
+  no_proof: true                  # スペルチェックと文章校正を行わない

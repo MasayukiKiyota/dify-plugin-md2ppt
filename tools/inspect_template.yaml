@@ -67,6 +67,9 @@ output_schema:
       description: Every slide layout with its placeholders.
       items:
         type: object
+    language:
+      type: string
+      description: Proofing language found in the template (the most common lang attribute), or ja-JP when the template has none.
     suggested_config:
       type: object
       description: Guessed layout and placeholder mapping, or null when emit_config is false.
