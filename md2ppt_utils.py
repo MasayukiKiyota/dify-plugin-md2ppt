@@ -28,7 +28,6 @@ EMU_IN = 914400.0
 TEMPLATE_SUFFIXES = (".pptx", ".potx")
 
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-YAML_MIME = "application/x-yaml"
 
 # .potx は [Content_Types].xml で template.main+xml を宣言する。python-pptx の
 # Presentation() は presentation.main+xml しか受け付けないため、拡張子を .pptx に
@@ -684,3 +683,23 @@ def config_to_yaml(suggested: dict[str, Any], template_name: str) -> str:
         f"# md_to_pptx ツールの config_yaml パラメータにこのまま貼り付けてください。\n"
         f"{body}"
     )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ツールの出力
+# ════════════════════════════════════════════════════════════════════════
+
+def payload_messages(tool: Any, payload: dict[str, Any]):
+    """JSON ペイロードと、その全キーのワークフロー変数を yield する。
+
+    ツール定義の output_schema は Dify の変数ピッカーに名前と型を宣言するだけで、
+    値は入らない。後続のノードから参照できるようにするには、変数メッセージを
+    別に流す必要がある。同じ dict から JSON と変数の両方を作ることで、
+    「JSON には値があるのに変数は null」という食い違いが起きないようにする。
+
+    値が None のキーも null のまま出す。ピッカーに出る名前の集合と実際に出る
+    変数の集合を常に一致させておくためで、テスト（[9c]）がこれを見張っている。
+    """
+    yield tool.create_json_message(payload)
+    for name, value in payload.items():
+        yield tool.create_variable_message(name, value)

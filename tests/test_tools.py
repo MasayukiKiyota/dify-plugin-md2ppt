@@ -13,6 +13,7 @@ from types import SimpleNamespace
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR))
 
+import yaml  # noqa: E402
 from dify_plugin.entities.tool import ToolInvokeMessage, ToolRuntime  # noqa: E402
 
 from tools.inspect_template import InspectTemplateTool  # noqa: E402
@@ -58,10 +59,54 @@ def by_type(messages, message_type):
 TEXT = ToolInvokeMessage.MessageType.TEXT
 JSON = ToolInvokeMessage.MessageType.JSON
 BLOB = ToolInvokeMessage.MessageType.BLOB
+VARIABLE = ToolInvokeMessage.MessageType.VARIABLE
+
+# Dify の tool ノードが自前で使う出力キー。変数名がぶつかると上書きされる。
+RESERVED = {"text", "files", "json"}
 
 
 def payload(msg):
     return msg.message.json_object
+
+
+def variable_names(messages) -> list:
+    """出力された変数名。重複を検出したいので list で返す。"""
+    return [m.message.variable_name for m in by_type(messages, VARIABLE)]
+
+
+def variables(messages) -> dict:
+    return {m.message.variable_name: m.message.variable_value
+            for m in by_type(messages, VARIABLE)}
+
+
+def message_order_ok(messages) -> bool:
+    """変数は JSON より後、blob より前に出ていること。"""
+    types = [m.type for m in messages]
+    at = [i for i, t in enumerate(types) if t == VARIABLE]
+    if not at:
+        return False
+    if JSON in types and types.index(JSON) > at[0]:
+        return False
+    return BLOB not in types or at[-1] < types.index(BLOB)
+
+
+def check_vars(label: str, msgs) -> dict:
+    """JSON ペイロードと変数メッセージが 1 対 1 で対応していること。
+
+    output_schema に名前を宣言しただけでは値が入らない（＝後続ノードから
+    参照すると null になる）という不具合を構造的に防ぐためのチェック。
+    """
+    jsons = by_type(msgs, JSON)
+    check(f"{label}: JSON は 1 つ", len(jsons) == 1, str(len(jsons)))
+    j, names = payload(jsons[0]), variable_names(msgs)
+    v = variables(msgs)
+    check(f"{label}: 変数名が JSON のキーと一致",
+          set(names) == set(j), str(set(names) ^ set(j)))
+    check(f"{label}: 変数名が重複しない", len(names) == len(set(names)), str(names))
+    check(f"{label}: 予約名と衝突しない", not (RESERVED & set(names)), str(names))
+    check(f"{label}: 変数は JSON の後・blob の前",
+          message_order_ok(msgs), str([m.type.value for m in msgs]))
+    return v
 
 
 def main() -> int:
@@ -92,6 +137,11 @@ def main() -> int:
     check("no warnings", j["warnings"] == [], str(j["warnings"]))
     check("front matter in meta", j["meta"].get("author") == "情報システム部",
           str(j["meta"]))
+    v1 = check_vars("[1]", msgs)
+    check("slide_count が変数に入る", v1["slide_count"] == 13, str(v1["slide_count"]))
+    check("outline が変数に入る", isinstance(v1["outline"], str) and v1["outline"])
+    check("warnings が変数に入る", v1["warnings"] == [], str(v1["warnings"]))
+    check("成功時は error を出さない", "error" not in v1, str(sorted(v1)))
     check("size matches blob", j["size"] == len(blobs[0].message.blob))
     check("text summary present", len(texts) == 1 and "13 枚" in texts[0].message.text,
           texts[0].message.text if texts else "(none)")
@@ -139,7 +189,11 @@ def main() -> int:
     check("11 layouts", j["layout_count"] == 11, str(j["layout_count"]))
     check("16:9", j["aspect_ratio"] == "16:9", j["aspect_ratio"])
     check("config_yaml is null", j["config_yaml"] is None)
-    check("suggested_config is null", j["suggested_config"] is None)
+    check("suggested_config は出力から消えた", "suggested_config" not in j,
+          str(sorted(j)))
+    v6 = check_vars("[6]", msgs)
+    check("config_yaml 変数も null", "config_yaml" in v6 and v6["config_yaml"] is None,
+          str(sorted(v6)))
     report = by_type(msgs, TEXT)[0].message.text
     check("report names the template", "template.pptx" in report)
     check("report lists 表紙", "表紙" in report)
@@ -148,23 +202,24 @@ def main() -> int:
 
     print("[7] inspect_template with emit_config")
     msgs = run(InspectTemplateTool, {"template_file": tpl_file, "emit_config": True})
-    blobs = by_type(msgs, BLOB)
-    check("config blob returned", len(blobs) == 1, str(len(blobs)))
-    check("blob emitted last", msgs[-1].type == BLOB)
-    check("blob named config.yaml", blobs[0].meta.get("file_name") == "config.yaml",
-          str(blobs[0].meta))
+    check("ファイルは返さない", not by_type(msgs, BLOB))
+    check("最後は変数メッセージ", msgs[-1].type == VARIABLE, str(msgs[-1].type))
     j = payload(by_type(msgs, JSON)[0])
+    v7 = check_vars("[7]", msgs)
     check("config_yaml present", isinstance(j["config_yaml"], str) and j["config_yaml"])
-    check("guessed layouts",
-          j["suggested_config"]["layouts"]["content"] == "本文",
-          str(j["suggested_config"]))
-    check("校正言語も config に乗る",
-          j["suggested_config"]["options"]["language"] == "en-US",
-          str(j["suggested_config"].get("options")))
+    check("config_yaml 変数に本文が入る", v7["config_yaml"] == j["config_yaml"])
+    check("生成元のコメントが付く", v7["config_yaml"].startswith("# md2ppt"),
+          v7["config_yaml"][:40])
+    # config.yaml ファイルが無くなり YAML テキストが唯一の受け渡し経路になったので、
+    # 実際に YAML として読めることまで確かめる。
+    cfg = yaml.safe_load(j["config_yaml"])
+    check("guessed layouts", cfg["layouts"]["content"] == "本文", str(cfg["layouts"]))
+    check("校正言語も config に乗る", cfg["options"]["language"] == "en-US",
+          str(cfg.get("options")))
     check("emit した YAML に language がある", "language:" in j["config_yaml"])
 
     print("[8] emitted config feeds md_to_pptx unchanged")
-    emitted = j["config_yaml"]
+    emitted = v7["config_yaml"]      # 実ワークフローと同じ「変数 → 次ノード」の経路
     msgs = run(MdToPptxTool, {
         "markdown_text": SAMPLE_MD,
         "template_file": tpl_file,
@@ -228,18 +283,18 @@ def main() -> int:
     print("[8e] emit_config に文字列の 'false' が届いても false として扱う")
     msgs = run(InspectTemplateTool, {"template_file": tpl_file,
                                      "emit_config": "false"})
-    check("config blob を返さない", not by_type(msgs, BLOB))
-    check("config_yaml は null", payload(by_type(msgs, JSON)[0])["config_yaml"] is None)
+    check("config_yaml は null", variables(msgs)["config_yaml"] is None)
     msgs = run(InspectTemplateTool, {"template_file": tpl_file,
                                      "emit_config": "true"})
-    check("文字列 'true' は有効", len(by_type(msgs, BLOB)) == 1)
+    emitted_yaml = variables(msgs)["config_yaml"]
+    check("文字列 'true' は有効",
+          isinstance(emitted_yaml, str) and "layouts:" in emitted_yaml,
+          str(emitted_yaml)[:40])
 
     print("[9b] プラグインの YAML が全部読める")
     # ここが壊れると dify plugin package が
     #   "mapping values are not allowed in this context" で落ちる。
     # 説明文に ": "（コロン＋空白）を素で書くと平文スカラーが切れるのが典型。
-    import yaml  # noqa: E402
-
     root = Path(__file__).resolve().parent.parent
     yaml_files = sorted(
         list(root.glob("*.yaml")) + list(root.glob("provider/*.yaml"))
@@ -260,10 +315,44 @@ def main() -> int:
         check(f"{rel} に tools 定義がある",
               isinstance(spec.get("tools"), list) and bool(spec["tools"]))
 
+    print("[9c] output_schema と実際に出る変数が一致する")
+    # output_schema は名前と型を宣言するだけで値は入らない。宣言だけ足して
+    # 変数を出し忘れると、後続ノードから参照したときに黙って null になる。
+    provider = yaml.safe_load(
+        (root / "provider/md2ppt.yaml").read_text(encoding="utf-8"))
+    props = {}
+    for rel in provider["tools"]:
+        spec = yaml.safe_load((root / rel).read_text(encoding="utf-8"))
+        props[spec["identity"]["name"]] = set(spec["output_schema"]["properties"])
+    check("2 つのツールの output_schema を読めた", len(props) == 2, str(sorted(props)))
+
+    ok_cases = [
+        ("md_to_pptx", run(MdToPptxTool, {"markdown_text": SAMPLE_MD,
+                                          "template_file": tpl_file})),
+        ("inspect_template", run(InspectTemplateTool, {"template_file": tpl_file,
+                                                       "emit_config": True})),
+    ]
+    for name, ok_msgs in ok_cases:
+        got = set(variable_names(ok_msgs))
+        want = props[name] - {"error"}
+        check(f"{name}: 成功時の変数が output_schema を過不足なく満たす",
+              got == want, str(sorted(got ^ want)))
+
+    for name, err_msgs in (("md_to_pptx", run(MdToPptxTool, {"markdown_text": SAMPLE_MD})),
+                           ("inspect_template", run(InspectTemplateTool, {}))):
+        got = set(variable_names(err_msgs))
+        check(f"{name}: エラー時は success / error だけ",
+              got == {"success", "error"}, str(sorted(got)))
+        check(f"{name}: それも output_schema にある", got <= props[name])
+
     print("[9] inspect_template: missing file is a clean error")
     msgs = run(InspectTemplateTool, {})
     check("no blob", not by_type(msgs, BLOB))
     check("success false", payload(by_type(msgs, JSON)[0])["success"] is False)
+    check("エラー時は success / error だけ",
+          set(variable_names(msgs)) == {"success", "error"},
+          str(sorted(variable_names(msgs))))
+    check("success が false として変数に入る", variables(msgs)["success"] is False)
 
     print()
     if failures:

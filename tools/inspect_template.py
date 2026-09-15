@@ -5,7 +5,6 @@ from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 
 from md2ppt_utils import (
-    YAML_MIME,
     Md2pptError,
     analyze_template,
     bool_param,
@@ -14,6 +13,7 @@ from md2ppt_utils import (
     file_bytes,
     file_name_of,
     format_template_report,
+    payload_messages,
 )
 
 
@@ -30,8 +30,8 @@ class InspectTemplateTool(Tool):
                     "解析する PowerPoint テンプレート（.pptx / .potx）を"
                     "アップロードしてください。"
                 )
-                yield self.create_json_message(
-                    {"success": False, "error": "template_file is required"}
+                yield from payload_messages(
+                    self, {"success": False, "error": "template_file is required"}
                 )
                 return
 
@@ -39,25 +39,25 @@ class InspectTemplateTool(Tool):
             info = analyze_template(file_bytes(template), template_name)
         except Md2pptError as e:
             yield self.create_text_message(str(e))
-            yield self.create_json_message({"success": False, "error": str(e)})
+            yield from payload_messages(self, {"success": False, "error": str(e)})
             return
         except Exception as e:
             yield self.create_text_message(f"テンプレートの解析に失敗しました: {e}")
-            yield self.create_json_message({"success": False, "error": str(e)})
+            yield from payload_messages(self, {"success": False, "error": str(e)})
             return
 
         report = format_template_report(info)
 
-        suggested = None
         config_yaml = None
         if emit_config:
-            suggested = detect_config(info)
-            config_yaml = config_to_yaml(suggested, info["template_name"])
+            # 判定結果は YAML テキストにして返す。ファイルでは返さない
+            # （後続のノードからは出力変数 config_yaml をそのまま渡せる）。
+            config_yaml = config_to_yaml(detect_config(info), info["template_name"])
             report = f"{report}\n{config_yaml}"
 
         yield self.create_text_message(report)
 
-        yield self.create_json_message({
+        yield from payload_messages(self, {
             "success": True,
             "template_name": info["template_name"],
             "slide_width_in": info["slide_width_in"],
@@ -68,17 +68,5 @@ class InspectTemplateTool(Tool):
             "layout_names": info["layout_names"],
             "language": info["language"],
             "layouts": info["layouts"],
-            "suggested_config": suggested,
             "config_yaml": config_yaml,
         })
-
-        if config_yaml:
-            # 設定を最後にファイルとして emit し、そのままダウンロードできるようにする。
-            yield self.create_blob_message(
-                config_yaml.encode("utf-8"),
-                meta={
-                    "file_name": "config.yaml",
-                    "filename": "config.yaml",
-                    "mime_type": YAML_MIME,
-                },
-            )

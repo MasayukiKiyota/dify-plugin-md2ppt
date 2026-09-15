@@ -29,9 +29,12 @@ parameters:
       en_US: Generate mapping config
       ja_JP: マッピング設定を生成
     human_description:
-      en_US: Also return the layout mapping that would be auto-detected for this template, as YAML and as a config.yaml file. Useful for checking or adjusting the detection.
-      ja_JP: このテンプレートに対して自動判定されるレイアウト対応を YAML と config.yaml ファイルで返します。判定結果の確認・調整に使います。
-    llm_description: Set to true to also return the layout mapping that would be auto-detected for this template, as YAML. Default is false.
+      en_US: >-
+        Also return the layout mapping that would be auto-detected for this template, as YAML text in the config_yaml output variable. Paste it into the Markdown to PowerPoint tool's config_yaml parameter to check or adjust the detection. No file is produced.
+      ja_JP: >-
+        このテンプレートに対して自動判定されるレイアウト対応を、YAML テキスト（出力変数 config_yaml）で返します。md_to_pptx ツールの config_yaml パラメータにそのまま渡して、判定結果の確認・調整に使えます。ファイルは返りません。
+    llm_description: >-
+      Set to true to also return the layout mapping that would be auto-detected for this template, as YAML text in the config_yaml output variable. No file is returned. Default is false.
     form: llm
 output_schema:
   type: object
@@ -70,9 +73,6 @@ output_schema:
     language:
       type: string
       description: Proofing language found in the template (the most common lang attribute), or ja-JP when the template has none.
-    suggested_config:
-      type: object
-      description: Guessed layout and placeholder mapping, or null when emit_config is false.
     config_yaml:
       type: string
       description: The suggested mapping as YAML text, or null when emit_config is false.

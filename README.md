@@ -1,7 +1,7 @@
 # Markdown to PowerPoint
 
 **Author:** masayukikiyota
-**Version:** 0.0.1
+**Version:** 0.1.0
 **Type:** Tool
 
 Markdown を、既存の PowerPoint テンプレート（`.pptx` / `.potx`）のレイアウト・テーマ配色・
@@ -31,9 +31,9 @@ Markdown とテンプレートを受け取り、`.pptx` ファイルを返しま
 テンプレートのレイアウトは自動判定されるため、`config_yaml` を指定しなくても
 日本語・英語・独自命名のどのテンプレートでもそのまま動きます。
 
-出力は「テキストの要約 → JSON のメタデータ → `.pptx` ファイル」の順に返ります。
-JSON には `slide_count` / `spec_count` / `layouts_used` / `outline` / `warnings` などが
-入ります。
+出力は「テキストの要約 → JSON のメタデータ → 各フィールドの出力変数 →
+`.pptx` ファイル」の順に返ります。JSON には `slide_count` / `spec_count` /
+`layouts_used` / `outline` / `warnings` などが入ります。
 
 ### 2. PowerPoint テンプレート解析 (`inspect_template`)
 
@@ -43,7 +43,7 @@ JSON には `slide_count` / `spec_count` / `layouts_used` / `outline` / `warning
 | パラメータ | 型 | 必須 | 説明 |
 | --- | --- | --- | --- |
 | `template_file` | file | **必須** | 解析する `.pptx` / `.potx` |
-| `emit_config` | boolean | – | `true` で `config_yaml` の雛形も生成し、`config.yaml` として返します（自動判定の内容を確認・調整したいとき用） |
+| `emit_config` | boolean | – | `true` で自動判定の結果を YAML テキストとして出力変数 `config_yaml` に返します。後続ノードからそのまま `md_to_pptx` の `config_yaml` に渡せます（ファイルは返りません） |
 
 出力例:
 
@@ -53,6 +53,22 @@ JSON には `slide_count` / `spec_count` / `layouts_used` / `outline` / `warning
       0    TITLE                Title 1                     0.92   0.49  11.50   1.25
       1    OBJECT               Content Placeholder 2       0.92   1.75  11.50   4.94
 ```
+
+## ワークフローでの出力の参照
+
+どちらのツールも、JSON に入れている各キーを**同名のワークフロー変数**としても
+出力します。後続のノードからは `{ノード}.config_yaml` や `{ノード}.slide_count` の
+ように直接参照できます。
+
+- `md_to_pptx` が生成した `.pptx` だけは変数ではなく**ファイル出力**として返ります。
+  後続からは `{ノード}.files[0]` で受け取ってください。
+- `inspect_template` は**ファイルを返しません**。`emit_config: true` のときの設定は
+  `config_yaml` 変数（YAML テキスト）に入るので、それをそのまま `md_to_pptx` の
+  `config_yaml` パラメータに渡せます。
+- 失敗したときは `success`（false）と `error` だけが入り、ほかの変数は null になります。
+  分岐は `success` で判定してください。
+- `layouts` / `meta` / `layouts_used` はオブジェクトなので、テキスト欄に直接は
+  差し込めません。Code ノードなどで取り出してください。
 
 ## 自社テンプレートを使う手順
 
