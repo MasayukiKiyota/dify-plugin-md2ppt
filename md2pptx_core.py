@@ -26,6 +26,7 @@ import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -121,7 +122,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cell_margin": 0.06,      # inch
     },
     "quote": {"bar": True, "indent": 0.3, "italic": True},
-    "image": {"max_height": 4.2, "align": "center"},
+    # dpi は px → pt の換算（既定 96）。upscale を true にすると、小さい画像でも
+    # 従来どおり本文幅いっぱいに引き伸ばす。align は center / right / left。
+    "image": {"max_height": 4.2, "align": "center", "dpi": 96, "upscale": False},
     "spacing": {
         "block_gap": 8,          # pt
         "para_space_after": 6,   # pt
@@ -229,6 +232,8 @@ class Quote:
 class Image:
     src: str
     alt: str = ""
+    # ![alt](src "center 60%") の title。位置と幅の指定として読む（parse_image_title）。
+    title: str = ""
 
 
 @dataclass
@@ -254,6 +259,11 @@ def split_front_matter(src: str) -> tuple[dict, str]:
 
 def _inline_runs(node: SyntaxTreeNode) -> list[Run]:
     """inline ノード配下を Run の並びに変換する。"""
+    return _runs_of(node.children or [])
+
+
+def _runs_of(children: Iterable[SyntaxTreeNode]) -> list[Run]:
+    """inline の子ノード列を Run の並びに変換する。"""
     runs: list[Run] = []
     state = {"bold": 0, "italic": 0, "strike": 0, "link": None}
 
@@ -294,21 +304,132 @@ def _inline_runs(node: SyntaxTreeNode) -> list[Run]:
                 elif ch.content:
                     runs.append(Run(ch.content))
 
-    walk(node.children or [])
+    walk(children)
     return [r for r in runs if r.text]
 
 
-def _para_is_image(node: SyntaxTreeNode) -> Image | None:
-    """段落が画像 1 個だけなら Image ブロックとして扱う。"""
+IMAGE_ALIGNS = {"left": "left", "center": "center", "centre": "center", "right": "right"}
+MIN_IMAGE_WIDTH_PCT = 5.0
+MAX_IMAGE_WIDTH_PCT = 100.0
+# 幅は必ず % を付ける。裸の数字を幅と読むと "図 3" や "Chart 1" が誤爆する。
+_PCT_RE = re.compile(r"^(?:w=|width=)?(\d{1,3}(?:\.\d+)?)%$")
+# 「指示のつもりで書いたが解釈できない」ものを拾うための形（-10% / 0% / px=3%）。
+_PCT_LIKE_RE = re.compile(r"^[a-z]*=?-?\d[\d.]*%$")
+_TITLE_SPLIT_RE = re.compile(r"[\s,;、，]+")
+_IMAGE_TITLE_HINT = "left / center / right と 50% のような幅が書けます"
+
+
+def _short_title(title: str) -> str:
+    """警告に埋め込む用に title を 1 行へ潰す。"""
+    return " ".join((title or "").split())[:40]
+
+
+def parse_image_title(title: str) -> tuple[str | None, float | None, str | None]:
+    """画像の title を (横位置, 幅の割合, 警告) に解く。
+
+    指示として書かれていないただの説明文（ツールチップ）は黙って無視する。
+    そのため「すべてのトークンを解釈できたときだけ指示として扱う」。
+    ただし幅らしき書き方を含む短い title は、書き損じとみなして警告を出す。
+
+    config の既定値はここでは埋めない（title が何を言ったかだけを返す）。
+    """
+    # NFKC で全角をまとめて吸収する（％→% ５０→50 ｃｅｎｔｅｒ→center 全角空白→空白）。
+    # 正規化した文字列は解釈にだけ使い、警告文には元の title を使う。
+    text = unicodedata.normalize("NFKC", title or "").strip().casefold()
+    text = re.sub(r"\s*=\s*", "=", text)        # "w = 50%" → "w=50%"
+    text = re.sub(r"\s+%", "%", text)            # "50 %"    → "50%"
+    tokens = [t for t in _TITLE_SPLIT_RE.split(text) if t]
+    if not tokens:
+        return (None, None, None)
+
+    warn = f'画像の指定を解釈できません: "{_short_title(title)}"（{_IMAGE_TITLE_HINT}）'
+    align: str | None = None
+    pct: float | None = None
+    unknown: list[str] = []
+    clamped = False
+
+    for token in tokens:
+        if token in IMAGE_ALIGNS:
+            if align is not None:
+                return (None, None, warn)        # left right のような矛盾
+            align = IMAGE_ALIGNS[token]
+            continue
+        m = _PCT_RE.match(token)
+        if m is None:
+            unknown.append(token)
+            continue
+        if pct is not None:
+            return (None, None, warn)            # 50% 70% のような矛盾
+        value = float(m.group(1))
+        if not MIN_IMAGE_WIDTH_PCT <= value <= MAX_IMAGE_WIDTH_PCT:
+            value = min(max(value, MIN_IMAGE_WIDTH_PCT), MAX_IMAGE_WIDTH_PCT)
+            clamped = True
+        pct = value / 100.0
+
+    if unknown:
+        # 解釈できない語が混ざっている。幅らしき語を含む短い title なら書き損じ、
+        # そうでなければ普通の説明文とみなして黙って無視する。
+        looks_like_directive = (len(tokens) <= 3
+                                and any(_PCT_LIKE_RE.match(t) for t in tokens))
+        return (None, None, warn if looks_like_directive else None)
+
+    note = None
+    if clamped:
+        note = (f'画像の幅は {MIN_IMAGE_WIDTH_PCT:g}%〜{MAX_IMAGE_WIDTH_PCT:g}% で'
+                f'指定してください: "{_short_title(title)}"')
+    return (align, pct, note)
+
+
+def _image_of(node: SyntaxTreeNode) -> Image:
+    alt = "".join(c.content for c in node.children or [])
+    return Image(node.attrs.get("src", ""), alt, str(node.attrs.get("title", "") or ""))
+
+
+def _para_blocks(node: SyntaxTreeNode) -> list[Block]:
+    """段落を、1 行を丸ごと占める画像で区切ってブロックに分ける。
+
+    Markdown では画像の前に空行が無いと前の行と同じ段落になる。LLM が書いた
+    原稿では普通に起きるので、行として独立している画像は画像として扱う。
+    文の途中に置かれた画像は従来どおり alt テキストになる。
+    """
     inline = next((c for c in node.children if c.type == "inline"), None)
     if inline is None:
-        return None
-    kids = [c for c in (inline.children or []) if not (c.type == "text" and not c.content.strip())]
-    if len(kids) == 1 and kids[0].type == "image":
-        img = kids[0]
-        alt = "".join(c.content for c in img.children or [])
-        return Image(img.attrs.get("src", ""), alt)
-    return None
+        return []
+
+    lines: list[list[SyntaxTreeNode]] = [[]]
+    for child in inline.children or []:
+        if child.type in ("softbreak", "hardbreak"):
+            lines.append([])
+        else:
+            lines[-1].append(child)
+
+    blocks: list[Block] = []
+    pending: list[list[SyntaxTreeNode]] = []    # まだ Para にしていない行
+
+    def flush() -> None:
+        runs: list[Run] = []
+        for line in pending:
+            line_runs = _runs_of(line)
+            if not line_runs:
+                continue
+            if runs:
+                runs.append(Run("\n"))           # 元の改行を保つ
+            runs.extend(line_runs)
+        if runs:
+            blocks.append(Para(runs))
+        pending.clear()
+
+    for line in lines:
+        visible = [c for c in line
+                   if not (c.type == "text" and not c.content.strip())]
+        images = [c for c in visible if c.type == "image"]
+        if images and len(images) == len(visible):
+            flush()                              # 画像だけの行
+            blocks.extend(_image_of(img) for img in images)
+        else:
+            pending.append(line)
+    flush()
+    return blocks
 
 
 NOTES_RE = re.compile(r"<!--\s*(?:notes?|ノート)\s*[:：]\s*(.*?)\s*-->", re.S | re.I)
@@ -344,14 +465,7 @@ def nodes_to_blocks(nodes: Sequence[SyntaxTreeNode], level: int = 0,
             inline = next((c for c in node.children if c.type == "inline"), None)
             blocks.append(Heading(int(node.tag[1]), _inline_runs(inline) if inline else []))
         elif t == "paragraph":
-            img = _para_is_image(node)
-            if img is not None:
-                blocks.append(img)
-            else:
-                inline = next((c for c in node.children if c.type == "inline"), None)
-                runs = _inline_runs(inline) if inline else []
-                if runs:
-                    blocks.append(Para(runs))
+            blocks.extend(_para_blocks(node))
         elif t in ("bullet_list", "ordered_list"):
             ordered = t == "ordered_list"
             lb = ListBlock()
@@ -971,6 +1085,11 @@ class Renderer:
         self.slide_w_pt = self.prs.slide_width / EMU_PER_PT
         self.slide_h_pt = self.prs.slide_height / EMU_PER_PT
         self.sizes = SizeBook(cfg, self.prs, self.layout, self.warnings.append)
+        # 画像の解決結果（パスとピクセル寸法）。measure が何度も呼ぶのでキャッシュする。
+        self._image_cache: dict[str, tuple[Path | None, tuple[int, int] | None]] = {}
+        # title の解釈結果。警告を 1 回だけ出すためにもキャッシュが要る。
+        self._image_opts: dict[str, tuple[str | None, float | None]] = {}
+        self.align_default = self._config_align()
 
     # ---------- テンプレート ----------
 
@@ -1134,32 +1253,86 @@ class Renderer:
         scale = width_pt / sum(raw)
         return [w * scale for w in raw]
 
+    def _config_align(self) -> str:
+        """image.align を検証して返す。CLI は config の検証を通らないのでここで自衛する。"""
+        raw = self.cfg["image"].get("align")
+        align = IMAGE_ALIGNS.get(str(raw or "").strip().casefold())
+        if align is None:
+            if raw:
+                self.warnings.append(
+                    f"image.align を解釈できません（{str(raw)[:20]!r}）。center を使います")
+            return "center"
+        return align
+
+    def image_options(self, img: Image) -> tuple[str, float]:
+        """画像 1 枚の横位置と幅の割合。title が無ければ config の既定。"""
+        title = img.title or ""
+        if title not in self._image_opts:
+            align, pct, warn = parse_image_title(title)
+            if warn:
+                self.warnings.append(warn)   # キャッシュミス時だけ。measure は何度も呼ぶ
+            self._image_opts[title] = (align, pct)
+        align, pct = self._image_opts[title]
+        return (align or self.align_default, 1.0 if pct is None else pct)
+
+    def image_info(self, src: str) -> tuple[Path | None, tuple[int, int] | None]:
+        """画像の実体パスとピクセル寸法。src 単位でキャッシュする。
+
+        measure() は縮小と分割の試行ごとに呼ばれるので、キャッシュが無いと
+        1 枚の画像を何度も stat / open することになる。
+        """
+        if src not in self._image_cache:
+            path = self.resolve_image(src)
+            size = None
+            if path is not None:
+                try:
+                    from PIL import Image as PILImage
+                    with PILImage.open(path) as im:
+                        size = im.size
+                except Exception:
+                    size = None          # Pillow が無い・読めない形式
+            self._image_cache[src] = (path, size)
+        return self._image_cache[src]
+
     def image_size_pt(self, img: Image, width_pt: float) -> tuple[float, float]:
-        path = self.resolve_image(img.src)
-        max_h = self.cfg["image"]["max_height"] * 72
+        opts = self.cfg["image"]
+        max_h = opts["max_height"] * 72
+        path, size = self.image_info(img.src)
         if path is None:
-            return (width_pt, 40.0)
-        try:
-            from PIL import Image as PILImage
-            with PILImage.open(path) as im:
-                w, h = im.size
-            ratio = h / w
-        except Exception:
-            ratio = 0.62
-        w_pt = width_pt
-        h_pt = w_pt * ratio
-        if h_pt > max_h:
+            return (width_pt, 40.0)      # プレースホルダのテキストボックスに合わせる
+        # 幅の指定は「使える幅を絞る」指定。measure も draw もここを通るので、
+        # 見積りと実際の描画が食い違わない。
+        width_pt *= self.image_options(img)[1]
+        if size is None:
+            w_pt, h_pt = width_pt, width_pt * 0.62
+        else:
+            px_w, px_h = size
+            # 原寸（既定 96dpi 換算）。upscale が false ならここより大きくしない。
+            dpi = opts.get("dpi") or 96
+            nat_w = px_w * 72.0 / dpi
+            nat_h = px_h * 72.0 / dpi
+            w_pt = width_pt if opts.get("upscale") else min(width_pt, nat_w)
+            h_pt = w_pt * (nat_h / nat_w)
+        if h_pt > max_h:                 # 高さの上限は従来どおり縮小方向にだけ効く
+            w_pt = max_h * (w_pt / h_pt)
             h_pt = max_h
-            w_pt = h_pt / ratio
         return (w_pt, h_pt)
 
     def resolve_image(self, src: str) -> Path | None:
-        if re.match(r"^[a-z]+://", src, re.I):
+        src = (src or "").strip()
+        # 空 src（![alt]()）は base_dir そのものを指してしまうので必ず弾く。
+        # スキーム付き（http: / https: / data: …）は取得しない。スキーム名を
+        # 2 文字以上にしているのは、Windows のドライブレター（C:\...）を
+        # URL と取り違えないため。1 文字のスキームは実在しない。
+        if not src or re.match(r"^[a-z][a-z0-9+.-]+:", src, re.I):
             return None
-        p = Path(src)
-        if not p.is_absolute():
-            p = self.base_dir / p
-        return p if p.exists() else None
+        try:
+            p = Path(src)
+            if not p.is_absolute():
+                p = self.base_dir / p
+            return p if p.is_file() else None    # ディレクトリを掴まないこと
+        except (OSError, ValueError):
+            return None
 
     # ---------- 描画 ----------
 
@@ -1512,20 +1685,44 @@ class Renderer:
             para.line_spacing = 1.0
             para.space_after = Pt(0)
 
+    def image_placeholder(self, slide, x: float, y: float, w: float, note: str) -> None:
+        """画像を置けなかったことが分かるようにテキストで残す。"""
+        box = self.textbox(slide, x, y, w, 20)
+        para = box.text_frame.paragraphs[0]
+        self.paint.fill_runs(para, [Run(f"[{note}]")],
+                             size=self.sizes.write("caption", ctx="shape"),
+                             color=self.c["muted"])
+        self.paint.no_bullet(para)
+        self.warnings.append(note)
+
+    @staticmethod
+    def image_label(src: str) -> str:
+        """警告に出す画像の呼び名。
+
+        差し替えで絶対パスが入っていることがあるので、その場合はファイル名だけ
+        にする（利用者には一時ディレクトリのパスを見せても意味がない）。
+        """
+        try:
+            return Path(src).name if Path(src).is_absolute() else src
+        except (OSError, ValueError):
+            return src
+
     def draw_image(self, slide, img: Image, x: float, y: float, w: float, scale: float) -> None:
-        path = self.resolve_image(img.src)
+        path, _ = self.image_info(img.src)
+        label = self.image_label(img.src)
         if path is None:
-            box = self.textbox(slide, x, y, w, 20)
-            para = box.text_frame.paragraphs[0]
-            self.paint.fill_runs(para, [Run(f"[画像が見つかりません: {img.src}]")],
-                                 size=self.sizes.write("caption", ctx="shape"),
-                                 color=self.c["muted"])
-            self.paint.no_bullet(para)
-            self.warnings.append(f"画像が見つかりません: {img.src}")
+            self.image_placeholder(slide, x, y, w, f"画像が見つかりません: {label}")
             return
         w_pt, h_pt = self.image_size_pt(img, w)
-        off = (w - w_pt) / 2 if self.cfg["image"]["align"] == "center" else 0
-        slide.shapes.add_picture(str(path), Pt(x + off), Pt(y), Pt(w_pt), Pt(h_pt))
+        align = self.image_options(img)[0]
+        off = (w - w_pt) / 2 if align == "center" else (w - w_pt if align == "right" else 0)
+        try:
+            slide.shapes.add_picture(str(path), Pt(x + off), Pt(y), Pt(w_pt), Pt(h_pt))
+        except Exception as e:
+            # 未対応の形式（SVG / EMF / WebP）や壊れた画像で add_picture は例外を投げる。
+            # ここで捕まえないと変換全体が失敗してしまう。
+            self.image_placeholder(
+                slide, x, y, w, f"画像を読み込めません（未対応の形式か破損）: {label}（{e}）")
 
     # --- 表 ---
 

@@ -14,7 +14,10 @@ import copy
 import io
 import re
 import tempfile
+import unicodedata
+import urllib.parse
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -235,6 +238,7 @@ def _validate_config(data: dict, text: str) -> None:
                 f"受け取った値（{type(data[key]).__name__}）: {str(data[key])[:60]!r}"
             )
     _validate_sizes(data, text)
+    _validate_image(data, text)
 
 
 def _validate_sizes(data: dict, text: str) -> None:
@@ -271,6 +275,49 @@ def _validate_sizes(data: dict, text: str) -> None:
                     f"{core.MIN_FONT_SIZE:g}〜{core.MAX_FONT_SIZE:g} の範囲で"
                     f"指定してください（受け取った値: {item}）。"
                 )
+
+
+def _validate_image(data: dict, text: str) -> None:
+    """image セクションの値を確かめる。
+
+    これまで無検証だったので、align に middle と書いても黙って左寄せになっていた。
+    画像ごとの位置指定を入れるにあたり、config 側も間違いを指摘するようにする。
+    """
+    image = data.get("image") or {}
+    known = set(core.DEFAULT_CONFIG["image"])
+    unknown = [k for k in image if k not in known]
+    if unknown:
+        raise Md2pptError(
+            f"config_yaml の image に不明なキーがあります: "
+            f"{', '.join(map(str, unknown))}{_fullwidth_hint(text)}。"
+            f"指定できるのは {', '.join(sorted(known))} です。"
+        )
+    if "align" in image:
+        align = str(image["align"] or "").strip().casefold()
+        if align not in core.IMAGE_ALIGNS:
+            raise Md2pptError(
+                f"config_yaml の image.align は "
+                f"{', '.join(sorted(set(core.IMAGE_ALIGNS.values())))} のいずれかで"
+                f"指定してください{_fullwidth_hint(text)}。"
+                f"受け取った値: {str(image['align'])[:40]!r}"
+            )
+    for key in ("max_height", "dpi"):
+        if key not in image:
+            continue
+        value = image[key]
+        if isinstance(value, bool) or not _is_number(value) or float(value) <= 0:
+            raise Md2pptError(
+                f"config_yaml の image.{key} は 0 より大きい数値で"
+                f"指定してください{_fullwidth_hint(text)}。"
+                f"受け取った値（{type(value).__name__}）: {str(value)[:40]!r}"
+            )
+    if "upscale" in image and not isinstance(image["upscale"], bool):
+        raise Md2pptError(
+            f"config_yaml の image.upscale は true か false で"
+            f"指定してください{_fullwidth_hint(text)}。"
+            f"受け取った値（{type(image['upscale']).__name__}）: "
+            f"{str(image['upscale'])[:40]!r}"
+        )
 
 
 def _is_number(value) -> bool:
@@ -383,11 +430,16 @@ def convert(
     template_bytes: bytes,
     template_filename: str | None = None,
     config_yaml: str | None = None,
+    *,
+    image_files: Any = None,
 ) -> dict[str, Any]:
     """Markdown を PowerPoint に変換する。
 
+    image_files はアップロードされた画像（File の配列）。Markdown の
+    ![alt](src) に、ファイル名一致 → 出現順、の順で割り当てる。
+
     returns: {"pptx", "slide_count", "spec_count", "outline", "warnings",
-              "meta", "detected"}
+              "meta", "detected", "images_used"}
     """
     check_template_name(template_filename)
     # config_yaml が壊れているならテンプレートを開く前に落とす
@@ -409,6 +461,10 @@ def convert(
         cfg["template"] = str(path)
 
         meta, blocks, notes = core.parse_markdown(md_text)
+        # 画像の割り当ては build_slides より前に済ませる。Renderer は measure()
+        # で画像の実寸を見てページ割りを決めるので、その時点で実ファイルが
+        # 置かれている必要がある。
+        image_notes, images_used = apply_images(blocks, image_files, work)
         specs = core.build_slides(meta, blocks, cfg)
         if not specs:
             raise Md2pptError(
@@ -438,7 +494,7 @@ def convert(
             "slide_count": len(renderer.prs.slides),
             "spec_count": len(specs),
             "outline": core.outline(specs),
-            "warnings": list(dict.fromkeys(renderer.warnings)),
+            "warnings": list(dict.fromkeys(image_notes + renderer.warnings)),
             "meta": {
                 k: str(v) for k, v in (meta or {}).items()
                 if k in ("title", "subtitle", "author", "date") and v
@@ -446,6 +502,7 @@ def convert(
             "detected": detected,
             "layouts_used": dict(cfg["layouts"]),
             "language_used": renderer.applied_language,
+            "images_used": images_used,
         }
 
 
@@ -683,6 +740,298 @@ def config_to_yaml(suggested: dict[str, Any], template_name: str) -> str:
         f"# md_to_pptx ツールの config_yaml パラメータにこのまま貼り付けてください。\n"
         f"{body}"
     )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 画像
+# ════════════════════════════════════════════════════════════════════════
+
+# python-pptx が読める形式。SVG / EMF / WebP は読めないので入れない。
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff"})
+_IMAGES_DIRNAME = "images"
+# 拡張子が無い・当てにならないときに中身から判定する。
+_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpg"),
+    (b"GIF8", "gif"),
+    (b"BM", "bmp"),
+    (b"II*\x00", "tif"),
+    (b"MM\x00*", "tif"),
+)
+
+
+@dataclass
+class ImageUpload:
+    """アップロードされた画像 1 件。
+
+    dify_plugin の File は .blob が遅延プロパティで、触った瞬間に HTTP GET が
+    走る。割り当てが決まるまで読まずに済むよう、名前と種別だけ先に持つ。
+    """
+
+    name: str = ""          # 元のファイル名。空もありうる
+    mime: str = ""
+    kind: str = "unknown"   # "image" / "other" / "unknown"
+    source: Any = None      # File / dict / bytes
+    path: Path | None = None            # 書き出し済みなら再利用する
+    _data: bytes | None = field(default=None, repr=False)
+    _error: str | None = field(default=None, repr=False)
+
+    @property
+    def label(self) -> str:
+        return self.name or "(名前なし)"
+
+    def read(self) -> bytes | None:
+        """内容を取り出す。取れなければ None を返し、理由を error に残す。"""
+        if self._data is not None or self._error is not None:
+            return self._data
+        try:
+            blob = self.source if isinstance(self.source, (bytes, bytearray)) else None
+            if blob is None:
+                blob = getattr(self.source, "blob", None)
+            if blob is None and isinstance(self.source, dict):
+                blob = self.source.get("blob")
+            if blob is None:
+                self._error = f"画像の内容を取得できませんでした: {self.label}"
+            elif not bytes(blob):
+                self._error = f"画像の中身が空です: {self.label}"
+            else:
+                self._data = bytes(blob)
+        except Exception as e:   # .blob は httpx.get。ValueError / HTTPError が飛ぶ
+            self._error = (
+                f"画像ファイルを取得できませんでした（{self.label}）: {e}。"
+                "リモートデバッグ中の場合は、Dify の FILES_URL が"
+                "このプラグインから到達できる URL になっているか確認してください。"
+            )
+        return self._data
+
+    @property
+    def error(self) -> str | None:
+        return self._error
+
+
+def _kind_of(source: Any, mime: str, name: str) -> str:
+    """画像として扱えるファイルかどうか。判定材料が無ければ unknown。"""
+    file_type = getattr(source, "type", None)
+    if isinstance(source, dict):
+        file_type = source.get("type", file_type)
+    value = getattr(file_type, "value", file_type)
+    if isinstance(value, str) and value:
+        return "image" if value == "image" else "other"
+    if mime:
+        return "image" if mime.lower().startswith("image/") else "other"
+    suffix = Path(name or "").suffix.lower()
+    if suffix:
+        return "image" if suffix in _IMAGE_EXTS else "other"
+    return "unknown"
+
+
+def _one_upload(item: Any) -> ImageUpload | None:
+    """配列の 1 要素を ImageUpload にする。blob には触らない。"""
+    if item is None or item == "":
+        return None
+    if isinstance(item, (bytes, bytearray)):
+        return ImageUpload(kind="unknown", source=bytes(item))
+    if isinstance(item, dict):
+        name = str(item.get("filename") or item.get("file_name") or "")
+        mime = str(item.get("mime_type") or item.get("mime") or "")
+    else:
+        name = str(getattr(item, "filename", "") or "")
+        mime = str(getattr(item, "mime_type", "") or "")
+    return ImageUpload(name=name, mime=mime,
+                       kind=_kind_of(item, mime, name), source=item)
+
+
+def image_uploads(param: Any) -> tuple[list[ImageUpload], list[str]]:
+    """image_files パラメータを正規化する。例外は投げず、警告を返す。
+
+    未指定・番兵文字列・単体ファイル・dict・bytes・配列をすべて吸収する。
+    file_bytes() が配列を拒否するのとは方針が違う（あちらはテンプレートなど
+    「無ければ何も作れない」入力で、こちらは無くても変換を続けたい入力）。
+    """
+    notes: list[str] = []
+    if param is None:
+        return [], notes
+    if isinstance(param, str):
+        # Dify が未入力欄に "None" を入れて送ってくることがある（bool_param と同じ事情）。
+        if not text_param(param):
+            return [], notes
+        return [], [f"image_files に文字列が渡されたため無視しました: {param[:40]!r}"]
+    # 単一のファイル変数を繋ぐと配列ではなく File 単体で届く。
+    items = list(param) if isinstance(param, (list, tuple)) else [param]
+
+    uploads: list[ImageUpload] = []
+    for item in items:
+        try:
+            one = _one_upload(item)
+        except Exception as e:                                  # noqa: BLE001
+            notes.append(f"画像ファイルを読み取れませんでした: {e}")
+            continue
+        if one is not None:
+            uploads.append(one)
+    others = [u.label for u in uploads if u.kind == "other"]
+    if others:
+        notes.append("画像として扱えないファイルを無視しました: " + ", ".join(others))
+    return uploads, notes
+
+
+def _match_key(name: str) -> str:
+    """参照側の src とファイル名を突き合わせるキー。
+
+    NFC に揃え、URL のクエリ・フラグメントを落とし、パーセントデコードして
+    ファイル名だけを取り、大文字小文字を無視する。
+    """
+    text = unicodedata.normalize("NFC", (name or "").strip()).strip("<>")
+    text = text.split("#", 1)[0].split("?", 1)[0]
+    try:
+        text = urllib.parse.unquote(text)
+    except Exception:                                           # noqa: BLE001
+        pass
+    text = text.replace("\\", "/").rstrip("/")
+    return text.rsplit("/", 1)[-1].casefold()
+
+
+def _sniff_ext(data: bytes) -> str:
+    for magic, ext in _MAGIC:
+        if data.startswith(magic):
+            return ext
+    return ""
+
+
+def _safe_image_name(raw: str, index: int, data: bytes) -> str:
+    """アップロード名を一時ディレクトリに置ける名前にする。
+
+    日本語名はそのまま残す（ローマ字化するとファイル名一致が壊れる）。
+    """
+    name = unicodedata.normalize("NFC", (raw or "").strip())
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]          # basename だけ
+    name = re.sub(r'[\\/:*?"<>|\r\n\t\x00]', "_", name)
+    name = name.strip(". ")                                      # ".." や先頭ドット対策
+    stem, dot, ext = name.rpartition(".")
+    if not dot:
+        stem, ext = name, ""
+    ext = ext.lower()
+    if f".{ext}" not in _IMAGE_EXTS:
+        ext = _sniff_ext(data) or ext or "png"
+    stem = (stem or f"image-{index + 1}")[:80]
+    return f"{stem}.{ext}"
+
+
+def write_image(data: bytes, raw_name: str, index: int, images_dir: Path) -> Path:
+    """画像を作業ディレクトリに書き出して絶対パスを返す。"""
+    images_dir.mkdir(parents=True, exist_ok=True)
+    dst = images_dir / _safe_image_name(raw_name, index, data)
+    if dst.exists():
+        stem, ext, n = dst.stem, dst.suffix, 2
+        while (images_dir / f"{stem}-{n}{ext}").exists():
+            n += 1
+        dst = images_dir / f"{stem}-{n}{ext}"
+    if not dst.resolve().is_relative_to(images_dir.resolve()):
+        raise Md2pptError(f"画像ファイル名が不正です: {raw_name}")
+    dst.write_bytes(data)
+    return dst.resolve()
+
+
+def iter_image_refs(blocks: Any, in_quote: bool = False):
+    """ブロック列から Image を文書順に取り出す（引用の中も辿る）。"""
+    for blk in blocks or []:
+        if isinstance(blk, core.Image):
+            yield blk, in_quote
+        else:
+            nested = getattr(blk, "blocks", None)        # Quote.blocks
+            if isinstance(nested, list):
+                yield from iter_image_refs(nested, True)
+
+
+def assign_images(refs: list[Any],
+                  uploads: list[ImageUpload]) -> tuple[dict[int, int], list[str]]:
+    """参照（文書順）とアップロード（入力順）を対応付ける。
+
+    1. src のファイル名が一致するものを割り当てる。同じ名前の参照が複数あって
+       ファイルが 1 つなら使い回す（同じロゴを何度も貼るケース）。
+    2. 余ったファイルを、まだ割り当たっていない参照に出現順で割り当てる。
+
+    同じ入力なら必ず同じ結果になるように、集合ではなくリストで索引を持ち、
+    同点は「未使用のうち最も早いファイル」で決める。
+    """
+    notes: list[str] = []
+    assigned: dict[int, int] = {}
+    used = [False] * len(uploads)
+
+    by_name: dict[str, list[int]] = {}
+    for i, upload in enumerate(uploads):
+        key = _match_key(upload.name)
+        if key:
+            by_name.setdefault(key, []).append(i)
+
+    for ref in refs:                                    # ステージ 1: 名前一致
+        key = _match_key(ref.src)
+        if not key or key.startswith("data:"):
+            continue
+        candidates = by_name.get(key)
+        if not candidates:
+            continue
+        index = next((i for i in candidates if not used[i]), candidates[0])
+        assigned[id(ref)] = index
+        used[index] = True
+
+    leftovers = [i for i, u in enumerate(uploads) if not used[i] and u.kind != "other"]
+    pending = [r for r in refs if id(r) not in assigned]
+    for ref, index in zip(pending, leftovers):          # ステージ 2: 出現順
+        assigned[id(ref)] = index
+        used[index] = True
+    ordered = min(len(pending), len(leftovers))
+    if ordered:
+        notes.append(f"ファイル名が一致しない画像 {ordered} 件を出現順に割り当てました。")
+
+    unused = [u.label for i, u in enumerate(uploads) if not used[i] and u.kind != "other"]
+    if unused:
+        notes.append("使われなかった画像ファイル: " + ", ".join(unused))
+    return assigned, notes
+
+
+def apply_images(blocks: Any, param: Any, work: Path) -> tuple[list[str], int]:
+    """アップロードされた画像を Markdown の参照に割り当て、src を書き換える。
+
+    画像が原因で変換を止めることはしない。問題は警告にして、該当箇所は
+    「画像が見つかりません」のプレースホルダに任せる（テンプレートの取得失敗は
+    何も作れないのでハードエラーのまま、という非対称な扱いにしている）。
+    """
+    refs: list[Any] = []
+    notes: list[str] = []
+    for ref, in_quote in iter_image_refs(blocks):
+        if in_quote:
+            # 引用の中の Image は fill_text_frame が空段落にしてしまい描画されない。
+            # ここで割り当てるとファイルだけ消費されて絵が出ないので外す。
+            notes.append(f"引用（>）の中の画像は描画されません: {ref.src}")
+            continue
+        refs.append(ref)
+
+    uploads, upload_notes = image_uploads(param)
+    notes.extend(upload_notes)
+    if not uploads:
+        if refs:
+            notes.append("Markdown に画像がありますが image_files が指定されていません。")
+        return notes, 0
+
+    assigned, assign_notes = assign_images(refs, uploads)
+    notes.extend(assign_notes)
+
+    images_dir = work / _IMAGES_DIRNAME
+    used = 0
+    for ref in refs:
+        index = assigned.get(id(ref))
+        if index is None:
+            continue
+        upload = uploads[index]
+        if upload.path is None:                 # 同じファイルの使い回しは 1 回だけ書く
+            data = upload.read()
+            if data is None:
+                notes.append(upload.error or f"画像を使えませんでした: {upload.label}")
+                continue
+            upload.path = write_image(data, upload.name, index, images_dir)
+        ref.src = str(upload.path)              # 絶対パスなら resolve_image が即解決する
+        used += 1
+    return notes, used
 
 
 # ════════════════════════════════════════════════════════════════════════
