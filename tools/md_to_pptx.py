@@ -53,6 +53,7 @@ class MdToPptxTool(Tool):
                 template_bytes,
                 template_name,
                 tool_parameters.get("config_yaml"),
+                image_files=tool_parameters.get("image_files"),
             )
         except Md2pptError as e:
             yield self.create_text_message(str(e))
@@ -84,6 +85,7 @@ class MdToPptxTool(Tool):
             "meta": result["meta"],
             "layouts_used": result["layouts_used"],
             "language_used": result["language_used"],
+            "images_used": result["images_used"],
             "outline": result["outline"],
             "warnings": warnings,
         })

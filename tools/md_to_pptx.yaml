@@ -8,7 +8,7 @@ description:
   human:
     en_US: Convert Markdown into a .pptx deck using an uploaded PowerPoint template.
     ja_JP: アップロードした PowerPoint テンプレートを使って Markdown を .pptx に変換します。
-  llm: Converts Markdown into a PowerPoint (.pptx) presentation and returns it as a downloadable file. A PowerPoint template (.pptx or .potx) must be supplied - its layouts, theme colors and fonts are reused for the generated deck, and the layout to use for each kind of slide is detected automatically so no configuration is normally required. The Markdown is mapped to slides as follows - YAML front matter with a title becomes the cover slide, a level-1 heading becomes a section divider slide, a level-2 heading starts a new slide, and level-3/4 headings become in-slide headings. Bullet lists (up to 5 levels), ordered lists, tables with column alignment, fenced code blocks, block quotes, horizontal rules, images and inline bold/italic/code/strikethrough/links are all supported. Returns metadata plus the .pptx file itself.
+  llm: Converts Markdown into a PowerPoint (.pptx) presentation and returns it as a downloadable file. A PowerPoint template (.pptx or .potx) must be supplied - its layouts, theme colors and fonts are reused for the generated deck, and the layout to use for each kind of slide is detected automatically so no configuration is normally required. The Markdown is mapped to slides as follows - YAML front matter with a title becomes the cover slide, a level-1 heading becomes a section divider slide, a level-2 heading starts a new slide, and level-3/4 headings become in-slide headings. Bullet lists (up to 5 levels), ordered lists, tables with column alignment, fenced code blocks, block quotes, horizontal rules and inline bold/italic/code/strikethrough/links are all supported. Images are supported too, but only when you also upload the picture through the image_files parameter - the plugin never downloads remote images. Returns metadata plus the .pptx file itself.
 parameters:
   - name: markdown_text
     type: string
@@ -19,7 +19,8 @@ parameters:
     human_description:
       en_US: The Markdown source to convert. Ignored when a Markdown file is also supplied.
       ja_JP: 変換する Markdown 本文。Markdown ファイルも指定した場合はファイルが優先されます。
-    llm_description: The Markdown source to convert into slides. Supply either this or markdown_file. Use YAML front matter (title / subtitle / author / date) for the cover slide, "#" for section dividers and "##" for each content slide.
+    llm_description: >-
+      The Markdown source to convert into slides. Supply either this or markdown_file. Use YAML front matter (title / subtitle / author / date) for the cover slide, "#" for section dividers and "##" for each content slide. An image must sit on a line of its own to become a picture, and it may carry a title that sets its placement - write the keywords left, center or right and a percentage of the body width, as in ![Architecture](arch.png "right 60%"). The percentage is an upper bound between 5 and 100. Any other title text is ignored and treated as a plain caption.
     form: llm
   - name: markdown_file
     type: file
@@ -31,6 +32,20 @@ parameters:
       en_US: A .md or .txt file to convert. Takes precedence over the Markdown text field.
       ja_JP: 変換する .md / .txt ファイル。Markdown テキストより優先されます。
     llm_description: An uploaded Markdown file to convert. Supply either this or markdown_text.
+    form: llm
+  - name: image_files
+    type: files
+    required: false
+    label:
+      en_US: Images
+      ja_JP: 画像ファイル
+    human_description:
+      en_US: >-
+        Images to embed where the Markdown writes an image reference. Each reference is matched to an uploaded file by file name first, and any files left over are used for the remaining references in the order they appear. Small images are never enlarged beyond their natural size. They are centred by default, and each image can be placed individually by writing left, center, right or a percentage such as 60% in its Markdown title. PNG, JPEG, GIF, BMP and TIFF are supported.
+      ja_JP: >-
+        Markdown の画像参照に埋め込む画像。まず同じファイル名の参照に割り当て、余ったファイルは残りの参照に出現順で割り当てます。小さい画像は原寸を超えて拡大しません。配置は既定で中央で、画像の title に left / center / right や 60% と書けば 1 枚ずつ変えられます。PNG / JPEG / GIF / BMP / TIFF に対応します。
+    llm_description: >-
+      Optional image files to embed in the deck. Pass the images that the Markdown refers to. Matching is by file name - write the uploaded file's name as the image path, for example an image reference to sales.png for an uploaded sales.png. Files whose name matches no reference are assigned to the remaining image references in the order they appear, so arbitrary names also work when the order is right. An image must sit on a line of its own to become a picture; a blank line around it is not required. An image placed in the middle of a sentence is rendered as its alt text instead. Remote URLs are never fetched.
     form: llm
   - name: template_file
     type: file
@@ -98,6 +113,9 @@ output_schema:
     layouts_used:
       type: object
       description: The template layout name actually used for each slide kind (title, section, content, table, blank). These are auto-detected from the template unless config_yaml overrides them.
+    images_used:
+      type: number
+      description: How many image references in the Markdown were filled with an uploaded image.
     language_used:
       type: string
       description: The proofing language written into the deck, detected from the template unless options.language overrides it. Null when options.language is null.

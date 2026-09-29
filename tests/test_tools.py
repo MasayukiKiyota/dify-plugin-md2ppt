@@ -291,6 +291,36 @@ def main() -> int:
           isinstance(emitted_yaml, str) and "layouts:" in emitted_yaml,
           str(emitted_yaml)[:40])
 
+    print("[9d] image_files で画像を埋め込める")
+    import io as _io  # noqa: E402
+
+    from PIL import Image as _PIL  # noqa: E402
+
+    _buf = _io.BytesIO()
+    _PIL.new("RGB", (32, 32), (40, 200, 40)).save(_buf, format="PNG")
+    png = _buf.getvalue()
+
+    msgs = run(MdToPptxTool, {
+        "markdown_text": "## 図の確認\n\n![売上](sales.png)\n",
+        "template_file": tpl_file,
+        "image_files": [FakeFile(png, "sales.png", "image/png")],
+    })
+    v = variables(msgs)
+    check("変換できる", payload(by_type(msgs, JSON)[0])["success"] is True)
+    check("images_used が 1", v["images_used"] == 1, str(v["images_used"]))
+    check("見つからない警告が出ない",
+          not any("見つかりません" in w for w in v["warnings"]), str(v["warnings"]))
+    check(".pptx は従来どおり返る", len(by_type(msgs, BLOB)) == 1)
+
+    for label, value in (("未指定", None), ("'None'", "None"), ("空リスト", [])):
+        params = {"markdown_text": SAMPLE_MD, "template_file": tpl_file}
+        if value is not None:
+            params["image_files"] = value
+        msgs = run(MdToPptxTool, params)
+        check(f"image_files {label} でも通る",
+              variables(msgs)["images_used"] == 0,
+              str(variables(msgs)["images_used"]))
+
     print("[9b] プラグインの YAML が全部読める")
     # ここが壊れると dify plugin package が
     #   "mapping values are not allowed in this context" で落ちる。

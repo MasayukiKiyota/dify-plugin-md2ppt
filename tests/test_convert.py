@@ -166,6 +166,47 @@ def strip_sizes(pptx_bytes: bytes) -> bytes:
     return out.getvalue()
 
 
+class FakeUpload:
+    """dify_plugin の File のダックタイプ（tests/test_tools.py と同じ形）。"""
+
+    def __init__(self, blob: bytes, filename: str, mime_type: str = ""):
+        self.blob = blob
+        self.filename = filename
+        self.mime_type = mime_type
+
+
+def png_bytes(w: int, h: int, color=(200, 40, 40)) -> bytes:
+    """テスト用の PNG をその場で作る（バイナリのフィクスチャを増やさない）。"""
+    import io
+
+    from PIL import Image as PILImage
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (w, h), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def pictures(pptx_bytes: bytes) -> list[dict]:
+    """スライドに置かれた画像の寸法・位置・左上 1px の色。"""
+    import io
+
+    from PIL import Image as PILImage
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    out = []
+    prs = Presentation(io.BytesIO(pptx_bytes))
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+                continue
+            with PILImage.open(io.BytesIO(shape.image.blob)) as im:
+                color = im.convert("RGB").getpixel((0, 0))
+            out.append({"w": shape.width, "h": shape.height,
+                        "left": shape.left, "top": shape.top, "color": color})
+    return out
+
+
 def check(label: str, cond: bool, detail: str = "") -> None:
     if cond:
         print(f"  ok   {label}")
@@ -765,6 +806,302 @@ layouts:
     check("3 つとも既定 null で変換できる",
           typefaces(r21g["pptx"]) == set() and not r21g["warnings"],
           str(r21g["warnings"]))
+
+    print("[22] image_files で画像を埋め込む")
+    from pptx.util import Pt as _Pt  # noqa: E402
+
+    red, green, grey = (200, 40, 40), (40, 200, 40), (99, 99, 99)
+
+    def convert_img(markdown: str, files, cfg=None):
+        return u.convert(markdown, tpl, "t.pptx", cfg, image_files=files)
+
+    # 入力の正規化。Dify は未入力欄に "None" を入れて送ってくることがある。
+    for label, value in (("None", None), ("空文字", ""), ("'None'", "None"),
+                         ("'  none '", "  none "), ("空リスト", [])):
+        ups, notes = u.image_uploads(value)
+        check(f"{label} は 0 件・警告なし", ups == [] and notes == [], str(notes))
+    ups, notes = u.image_uploads("ごみ")
+    check("文字列は無視して警告", ups == [] and len(notes) == 1, str(notes))
+    check("単体のファイルも配列として扱う",
+          len(u.image_uploads(FakeUpload(png_bytes(8, 8), "a.png"))[0]) == 1)
+    check("dict も bytes も受ける",
+          len(u.image_uploads([{"filename": "a.png", "blob": png_bytes(8, 8)},
+                               png_bytes(8, 8)])[0]) == 2)
+
+    print("[22b] ファイル名で対応付ける")
+    r22 = convert_img(
+        "## A\n\n![図](chart.png)\n",
+        [FakeUpload(png_bytes(32, 32, red), "other.png", "image/png"),
+         FakeUpload(png_bytes(32, 32, green), "chart.png", "image/png")])
+    pics = pictures(r22["pptx"])
+    check("画像が 1 枚入る", len(pics) == 1, str(len(pics)))
+    check("名前が一致したほうが使われる", pics and pics[0]["color"] == green,
+          str(pics[0]["color"]) if pics else "")
+    check("images_used が 1", r22["images_used"] == 1, str(r22["images_used"]))
+    check("余りは警告に出る",
+          any("使われなかった画像ファイル" in w for w in r22["warnings"]),
+          str(r22["warnings"]))
+    check("見つからない警告は出ない",
+          not any("見つかりません" in w for w in r22["warnings"]), str(r22["warnings"]))
+
+    print("[22c] 名前が合わなければ出現順")
+    r22c = convert_img(
+        "## A\n\n![a](x1.png)\n\n![b](x2.png)\n",
+        [FakeUpload(png_bytes(64, 32, red), "p.png", "image/png"),
+         FakeUpload(png_bytes(64, 32, green), "q.png", "image/png")])
+    pics = pictures(r22c["pptx"])
+    check("2 枚とも入る", len(pics) == 2, str(len(pics)))
+    check("入力順に割り当てられる",
+          [p["color"] for p in pics] == [red, green], str([p["color"] for p in pics]))
+    check("出現順の警告が出る",
+          any("出現順に割り当てました" in w for w in r22c["warnings"]),
+          str(r22c["warnings"]))
+    check("images_used が 2", r22c["images_used"] == 2)
+
+    print("[22d] 原寸を超えて拡大しない")
+    r22d = convert_img("## A\n\n![小](s.png)\n",
+                       [FakeUpload(png_bytes(32, 32, red), "s.png", "image/png")])
+    pics = pictures(r22d["pptx"])
+    check("32px は 24pt になる（96dpi 換算）",
+          pics and pics[0]["w"] == _Pt(24) and pics[0]["h"] == _Pt(24),
+          str(pics[0]) if pics else "")
+    check("中央に寄る", pics and pics[0]["left"] > _Pt(100), str(pics[0]["left"]))
+
+    r22d2 = convert_img("## A\n\n![小](s.png)\n",
+                        [FakeUpload(png_bytes(32, 32, red), "s.png", "image/png")],
+                        cfg="image:\n  upscale: true\n")
+    check("upscale: true なら従来どおり広がる",
+          pictures(r22d2["pptx"])[0]["w"] > _Pt(200),
+          str(pictures(r22d2["pptx"])[0]["w"]))
+
+    print("[22e] 大きい画像は縮小する")
+    r22e = convert_img("## A\n\n![大](big.png)\n",
+                       [FakeUpload(png_bytes(4000, 2000, red), "big.png", "image/png")])
+    pic = pictures(r22e["pptx"])[0]
+    check("高さが max_height に収まる", pic["h"] <= _Pt(4.2 * 72) + 1, str(pic["h"]))
+    check("縦横比が保たれる", abs(pic["w"] / pic["h"] - 2.0) < 0.02,
+          str(pic["w"] / pic["h"]))
+
+    print("[22f] 同じ名前の参照はファイルを使い回す")
+    r22f = convert_img("## A\n\n![logo](logo.png)\n\n![logo](logo.png)\n",
+                       [FakeUpload(png_bytes(48, 48, grey), "logo.png", "image/png")])
+    pics = pictures(r22f["pptx"])
+    check("2 枚とも描かれる", len(pics) == 2, str(len(pics)))
+    check("未使用の警告は出ない",
+          not any("使われなかった" in w for w in r22f["warnings"]), str(r22f["warnings"]))
+
+    print("[22g] 壊れた入力でも変換は止まらない")
+    for label, markdown, files in (
+        ("空の src", "## A\n\n![図]()\n", None),
+        ("カレントディレクトリ", "## A\n\n![図](.)\n", None),
+        ("画像なしの参照", "## A\n\n![図](nope.png)\n", None),
+        ("非画像ファイル", "## A\n\n![図](a.png)\n",
+         [FakeUpload(b"%PDF-1.4 junk", "report.pdf", "application/pdf")]),
+        ("壊れた PNG", "## A\n\n![図](a.png)\n",
+         [FakeUpload(b"\x89PNG\r\n\x1a\njunk", "a.png", "image/png")]),
+        ("危険なファイル名", "## A\n\n![図](evil.png)\n",
+         [FakeUpload(png_bytes(40, 40), "../../evil.png", "image/png")]),
+        ("拡張子なし", "## A\n\n![図](logo)\n",
+         [FakeUpload(png_bytes(40, 40), "logo", "")]),
+        ("日本語のファイル名", "## A\n\n![図](図 1.png)\n",
+         [FakeUpload(png_bytes(40, 40), "図 1.png", "image/png")]),
+        ("URL の参照", "## A\n\n![図](https://cdn.example.com/a/sales.png)\n",
+         [FakeUpload(png_bytes(40, 40), "sales.png", "image/png")]),
+    ):
+        try:
+            r = convert_img(markdown, files)
+            check(f"{label} で落ちない", r["slide_count"] >= 1)
+        except Exception as e:                                  # noqa: BLE001
+            check(f"{label} で落ちない", False, f"{type(e).__name__}: {e}")
+
+    check("危険なファイル名でも画像は入る",
+          len(pictures(convert_img(
+              "## A\n\n![図](evil.png)\n",
+              [FakeUpload(png_bytes(40, 40), "../../evil.png", "image/png")]
+          )["pptx"])) == 1)
+    check("URL でもファイル名が一致すれば入る",
+          len(pictures(convert_img(
+              "## A\n\n![図](https://cdn.example.com/a/sales.png)\n",
+              [FakeUpload(png_bytes(40, 40), "sales.png", "image/png")]
+          )["pptx"])) == 1)
+
+    print("[22h] 引用の中の画像は割り当てない")
+    r22h = convert_img("## A\n\n> ![q](a.png)\n\n![b](b.png)\n",
+                       [FakeUpload(png_bytes(40, 40, green), "z.png", "image/png")])
+    check("引用の警告が出る",
+          any("引用（>）の中の画像" in w for w in r22h["warnings"]), str(r22h["warnings"]))
+    check("ファイルは後続の参照に回る",
+          len(pictures(r22h["pptx"])) == 1 and r22h["images_used"] == 1,
+          str(r22h["images_used"]))
+
+    print("[22i] 画像がある原稿で image_files が空なら知らせる")
+    r22i = convert_img("## A\n\n![図](a.png)\n", None)
+    check("案内の警告が出る",
+          any("image_files が指定されていません" in w for w in r22i["warnings"]),
+          str(r22i["warnings"]))
+    check("images_used は 0", r22i["images_used"] == 0)
+    check("画像なしの原稿では出ない", not any(
+        "image_files" in w for w in u.convert(md, tpl, "t.pptx", None)["warnings"]))
+
+    print("[22k] 画像の前に空行が無くても画像として扱う")
+    # LLM が書いた原稿では、画像が前の行にくっついて同じ段落になることが多い。
+    # 行として独立している画像は画像にする（文の途中のものは alt テキストのまま）。
+    tight = ("## アーキテクチャ図\n"
+             "アーキテクチャ図になります\n"
+             "![output0.png](output0.png)\n")
+    r22k = convert_img(
+        tight, [FakeUpload(png_bytes(800, 600, green), "output0.png", "image/png")])
+    check("画像が入る", len(pictures(r22k["pptx"])) == 1,
+          str(len(pictures(r22k["pptx"]))))
+    check("images_used が 1", r22k["images_used"] == 1, str(r22k["images_used"]))
+    check("警告が出ない", not r22k["warnings"], str(r22k["warnings"]))
+
+    def block_kinds(markdown: str) -> list[str]:
+        _, blocks, _ = u.core.parse_markdown(markdown)
+        return [type(b).__name__ for b in blocks]
+
+    for label, markdown, want in (
+        ("本文と画像に分かれる", tight, ["Heading", "Para", "Image"]),
+        ("画像の後の本文も残る", "## A\n本文1\n![x](a.png)\n本文2\n",
+         ["Heading", "Para", "Image", "Para"]),
+        ("文の途中の画像は従来どおり文字になる", "## A\n図 ![x](a.png) を見てください\n",
+         ["Heading", "Para"]),
+        ("1 行に 2 枚なら 2 ブロックになる", "## A\n![x](a.png) ![y](b.png)\n",
+         ["Heading", "Image", "Image"]),
+        ("ただの複数行は 1 つの段落のまま", "## A\n1 行目\n2 行目\n",
+         ["Heading", "Para"]),
+        ("画像だけの段落は従来どおり", "## A\n\n![x](a.png)\n", ["Heading", "Image"]),
+    ):
+        got = block_kinds(markdown)
+        check(label, got == want, str(got))
+
+    print("[23] 画像の位置と大きさを title で指定する")
+    # 解釈はすべて parse_image_title に閉じているので、pptx を作らずに表で確かめる。
+    # 一番大事なのは「普通の title で誤爆しない」こと。
+    for title, want_align, want_pct, want_warn in (
+        ("", None, None, False),
+        ("売上推移のグラフ", None, None, False),
+        ("Chart 1", None, None, False),
+        ("center of excellence の構成図", None, None, False),
+        ("Figure 2 (left)", None, None, False),
+        ("left", "left", None, False),
+        ("50%", None, 0.5, False),
+        ("center 60%", "center", 0.6, False),
+        ("60% CENTER", "center", 0.6, False),
+        ("w=50%", None, 0.5, False),
+        ("width = 50 %", None, 0.5, False),
+        ("right, 40%", "right", 0.4, False),
+        ("ｃｅｎｔｅｒ　５０％", "center", 0.5, False),
+        ("centre", "center", None, False),
+        ("rigth 50%", None, None, True),
+        ("-10%", None, None, True),
+        ("left right", None, None, True),
+        ("50% 70%", None, None, True),
+        ("120%", None, 1.0, True),
+        ("0%", None, 0.05, True),
+    ):
+        align, pct, warn = u.core.parse_image_title(title)
+        ok = (align == want_align and pct == want_pct and bool(warn) == want_warn)
+        check(f"title {title!r}", ok, f"{align!r} {pct!r} {warn!r}")
+
+    print("[23b] title が Image に載る")
+
+    def image_titles(markdown: str) -> list:
+        _, blocks, _ = u.core.parse_markdown(markdown)
+        return [(b.src, b.title) for b in blocks if isinstance(b, u.core.Image)]
+
+    check("title なし", image_titles("![a](x.png)\n") == [("x.png", "")])
+    check("title あり",
+          image_titles('![a](x.png "center 60%")\n') == [("x.png", "center 60%")])
+
+    print("[23c] 幅の指定が効く")
+    # 横長の画像にして max_height が効かないようにし、同じデッキ内の比で見る。
+    wide = png_bytes(4000, 500, red)
+
+    def two_wide():
+        return [FakeUpload(wide, "x.png", "image/png"),
+                FakeUpload(wide, "y.png", "image/png")]
+
+    r23 = convert_img('## A\n\n![a](x.png)\n\n![b](y.png "50%")\n', two_wide())
+    full, half = pictures(r23["pptx"])
+    check("50% は半分の幅になる", abs(half["w"] / full["w"] - 0.5) < 0.01,
+          str(half["w"] / full["w"]))
+    check("縦横比は保たれる",
+          abs(half["w"] / half["h"] - full["w"] / full["h"]) < 0.02)
+    check("幅の指定で警告は出ない", not r23["warnings"], str(r23["warnings"]))
+
+    print("[23d] 横位置の指定が効く")
+    def one_at(title):
+        markdown = f'## A\n\n![a](x.png "{title}")\n' if title else "## A\n\n![a](x.png)\n"
+        return pictures(convert_img(
+            markdown, [FakeUpload(wide, "x.png", "image/png")])["pptx"])[0]
+
+    full = one_at("")
+    left, center, right = one_at("left 50%"), one_at("center 50%"), one_at("right 50%")
+    check("左寄せは左端が揃う", abs(left["left"] - full["left"]) < 2000,
+          str(left["left"] - full["left"]))
+    check("右寄せは右端が揃う",
+          abs((right["left"] + right["w"]) - (full["left"] + full["w"])) < 2000,
+          str((right["left"] + right["w"]) - (full["left"] + full["w"])))
+    check("左 < 中央 < 右", left["left"] < center["left"] < right["left"],
+          f'{left["left"]} {center["left"]} {right["left"]}')
+
+    print("[23e] 見積りと描画が食い違わない")
+    # 幅を絞ったぶん高さも下がる。次のブロックの y がその実高さで進んでいないと、
+    # 「draw だけ幅を変えて measure を忘れた」ことになる。
+    r23e = convert_img('## A\n\n![a](x.png "50%")\n\n![b](y.png)\n', two_wide())
+    first, second = pictures(r23e["pptx"])
+    gap = _Pt(8) + _Pt(6)        # spacing.block_gap と measure が足す 6pt
+    check("2 枚目は 1 枚目の実高さのぶんだけ下がる",
+          abs(second["top"] - (first["top"] + first["h"] + gap)) < 3000,
+          str(second["top"] - (first["top"] + first["h"] + gap)))
+
+    print("[23f] 解釈できない title")
+    r23f = convert_img('## A\n\n![a](x.png "売上推移のグラフ")\n',
+                       [FakeUpload(wide, "x.png", "image/png")])
+    check("普通の title では警告が出ない", not r23f["warnings"], str(r23f["warnings"]))
+    check("普通の title では全幅のまま",
+          pictures(r23f["pptx"])[0]["w"] == full["w"])
+    r23g = convert_img('## A\n\n![a](x.png "rigth 50%")\n',
+                       [FakeUpload(wide, "x.png", "image/png")])
+    check("書き損じは警告になる",
+          any("画像の指定を解釈できません" in w for w in r23g["warnings"]),
+          str(r23g["warnings"]))
+    # 同じ title の画像が何枚あっても警告は 1 回だけ（measure は何度も呼ばれる）。
+    r23h = convert_img(
+        '## A\n\n![a](x.png "rigth 50%")\n\n![b](y.png "rigth 50%")\n', two_wide())
+    check("同じ title の警告は 1 回だけ",
+          sum("画像の指定を解釈できません" in w for w in r23h["warnings"]) == 1,
+          str(r23h["warnings"]))
+
+    print("[23i] image セクションの設定を検証する")
+    for label, bad in (
+        ("align が不正", "image:\n  align: middle\n"),
+        ("キーのタイポ", "image:\n  aling: left\n"),
+        ("dpi が 0", "image:\n  dpi: 0\n"),
+        ("upscale が真偽値でない", "image:\n  upscale: maybe\n"),
+    ):
+        try:
+            u.convert("## A\n\n本文\n", tpl, "t.pptx", bad)
+            check(f"{label} はエラー", False, "(no exception)")
+        except u.Md2pptError as e:
+            check(f"{label} はエラー", True)
+            print(f"       -> {e}")
+    check("正しい image 設定は通る",
+          not u.convert("## A\n\n本文\n", tpl, "t.pptx",
+                        "image:\n  align: right\n  upscale: true\n")["warnings"])
+
+    print("[22j] 同じ入力なら同じ結果になる")
+    def geometry(files):
+        r = convert_img("## A\n\n![a](x.png)\n\n![b](y.png)\n", files)
+        return r["warnings"], [(p["w"], p["h"], p["left"], p["top"]) for p in
+                               pictures(r["pptx"])]
+
+    def uploads():
+        return [FakeUpload(png_bytes(40, 40, red), "p.png", "image/png"),
+                FakeUpload(png_bytes(40, 40, green), "q.png", "image/png")]
+
+    check("2 回流しても一致する", geometry(uploads()) == geometry(uploads()))
 
     print()
     if failures:

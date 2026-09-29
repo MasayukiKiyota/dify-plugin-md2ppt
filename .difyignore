@@ -10,3 +10,4 @@ tests/
 sample/
 .git/
 .gitignore
+uv.lock

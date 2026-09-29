@@ -23,6 +23,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 tests/out/
+uv.lock
 
 # 変換ロジックの取り込み元。プラグイン本体には同梱しない（.difyignore も参照）
 sample/
