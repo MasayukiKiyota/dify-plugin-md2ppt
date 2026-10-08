@@ -637,8 +637,9 @@ layouts:
           u.core.DEFAULT_CONFIG["spacing"]["list_indent"] is None)
     check("table.explicit_format の既定は false",
           u.core.DEFAULT_CONFIG["table"]["explicit_format"] is False)
-    check("既定では marL を書き込まない",
-          not _has_marl(r2["pptx"]), "marL が書かれている")
+    text_only = u.convert("## A\n\n- 項目\n  - 子\n1. 番号\n", tpl, "t.pptx", None)
+    check("既定ではプレースホルダの箇条書きに marL を書き込まない",
+          not _has_marl(text_only["pptx"]), "marL が書かれている")
     check("明示指定すれば marL を書き込む", _has_marl(r["pptx"]))
 
     print("[20] 校正言語をテンプレートに合わせ、校正をオフにする")
@@ -1102,6 +1103,110 @@ layouts:
                 FakeUpload(png_bytes(40, 40, green), "q.png", "image/png")]
 
     check("2 回流しても一致する", geometry(uploads()) == geometry(uploads()))
+
+    print("[24] textbox の箇条書きもテンプレートのぶら下げにする")
+    import io
+    import re
+
+    def slide_pprs(pptx_bytes: bytes, n: int) -> list[str]:
+        with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+            xml = z.read(f"ppt/slides/slide{n}.xml").decode("utf-8")
+        return re.findall(r"<a:pPr\b[^>]*>", xml)
+
+    # 表があるので本文プレースホルダではなく自前の textbox に流し込まれる。
+    mixed_md = ("## A\n\n本文\n\n- 項目\n  - 子\n1. 番号\n\n"
+                "| a | b |\n|---|---|\n| 1 | 2 |\n")
+    pprs = slide_pprs(u.convert(mixed_md, tpl, "t.pptx", None)["pptx"], 1)
+    check("箇条書きに bodyStyle lvl1 の字下げを書く",
+          any('marL="342900"' in t and 'indent="-342900"' in t for t in pprs),
+          str(pprs))
+    check("子項目に bodyStyle lvl2 の字下げを書く",
+          any('lvl="1"' in t and 'marL="742950"' in t and 'indent="-285750"' in t
+              for t in pprs), str(pprs))
+    check("通常段落には書かない", len([t for t in pprs if "marL" in t]) == 3,
+          str(pprs))
+    pprs = slide_pprs(u.convert(mixed_md, tpl, "t.pptx",
+                                "spacing:\n  list_indent: 0.5\n  list_hanging: 0.25\n")
+                      ["pptx"], 1)
+    check("list_indent を指定すれば設定値が優先される",
+          any('marL="457200"' in t and 'indent="-228600"' in t for t in pprs),
+          str(pprs))
+
+    print("[25] 通常段落はぶら下げにしない")
+    # fixture の bodyStyle lvl1 は marL=342900 indent=-342900（ぶら下げ）。
+    pprs = slide_pprs(u.convert("## A\n\n### 見出し\n\n一行目\\\n二行目\n\n- 項目\n",
+                                tpl, "t.pptx", None)["pptx"], 1)
+    flat = [t for t in pprs if 'marL="0"' in t and 'indent="0"' in t]
+    check("見出しと段落は 1 行目の位置に揃える", len(flat) == 2, str(pprs))
+    check("箇条書きはテンプレートのまま", len([t for t in pprs if "marL" in t]) == 2,
+          str(pprs))
+
+    print("[25b] 続くテキストは 1 つのテキストボックスにまとめる")
+    pptx = u.convert("## A\n\n### 見出し\n\n本文\n\n- 項目\n\n"
+                     "| a | b |\n|---|---|\n| 1 | 2 |\n\n### 後\n\n本文\n",
+                     tpl, "t.pptx", None)["pptx"]
+    with zipfile.ZipFile(io.BytesIO(pptx)) as z:
+        xml = z.read("ppt/slides/slide1.xml").decode("utf-8")
+    boxes = [s for s in re.findall(r"<p:sp>.*?</p:sp>", xml, re.S)
+             if "<p:ph" not in s and "<p:txBody>" in s]
+    check("表の前後で 1 個ずつ（計 2 個）", len(boxes) == 2, str(len(boxes)))
+    check("見出し・段落・リストが同じボックスに入る",
+          all(w in boxes[0] for w in ("見出し", "本文", "項目")) if boxes else False)
+
+    print("[25c] 見出しをページ末尾に残さない")
+    cfg_split = "options:\n  shrink_steps: 0\n"
+    long_md = "## A\n\n" + "".join(
+        f"### 見出し{i}\n\n" + "長い本文です。" * 15 + "\n\n" for i in range(12))
+    r = u.convert(long_md, tpl, "t.pptx", cfg_split)
+    with zipfile.ZipFile(io.BytesIO(r["pptx"])) as z:
+        slides = [n for n in z.namelist()
+                  if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)]
+        # ページ番号（数字だけの run）は除く
+        texts = [[t for t in re.findall(r"<a:t>([^<]*)</a:t>", z.read(n).decode("utf-8"))
+                  if not t.isdigit()] for n in slides]
+    check("複数ページに分かれる", len(slides) > 1, str(len(slides)))
+    check("どのページも見出しで終わらない",
+          all(not t[-1].startswith("見出し") for t in texts if t), str([t[-1:] for t in texts]))
+
+    print("[26] separate_headings で見出しを別の図形にする")
+    sep = "options:\n  separate_headings: true\n"
+
+    def shapes(pptx_bytes: bytes) -> list[str]:
+        with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as z:
+            xml = z.read("ppt/slides/slide1.xml").decode("utf-8")
+        return [s for s in re.findall(r"<p:sp>.*?</p:sp>", xml, re.S)
+                if "<p:txBody>" in s and 'type="title"' not in s
+                and 'type="sldNum"' not in s]
+
+    def top(sp: str) -> int:
+        m = re.search(r'<a:off x="\d+" y="(\d+)"', sp)
+        return int(m.group(1)) if m else -1
+
+    check("既定ではオフ",
+          u.core.DEFAULT_CONFIG["options"]["separate_headings"] is False)
+    rich_md = "## A\n\n### 見出し\n\n本文\n\n- 項目\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+    boxes = shapes(u.convert(rich_md, tpl, "t.pptx", sep)["pptx"])
+    check("表入り: 見出しと本文で 2 個", len(boxes) == 2, str(len(boxes)))
+    check("表入り: 見出しのボックスに本文が入らない",
+          len(boxes) == 2 and "見出し" in boxes[0] and "本文" not in boxes[0]
+          and "本文" in boxes[1] and "項目" in boxes[1])
+
+    text_md = "## A\n\n本文A\n\n### 見出し\n\n本文B\n\n- 項目\n"
+    boxes = shapes(u.convert(text_md, tpl, "t.pptx", sep)["pptx"])
+    ph = [s for s in boxes if "<p:ph" in s]
+    tb = [s for s in boxes if "<p:ph" not in s]
+    check("テキストのみ: 最初の本文はプレースホルダ",
+          len(ph) == 1 and "本文A" in ph[0] and "見出し" not in ph[0], str(len(ph)))
+    check("テキストのみ: 見出しと後の本文は別のテキストボックス",
+          len(tb) == 2 and "見出し" in tb[0] and "本文B" not in tb[0]
+          and "本文B" in tb[1] and "項目" in tb[1], str(len(tb)))
+    tops = [top(s) for s in ph + tb]
+    check("テキストのみ: 上から順に並ぶ", tops == sorted(tops) and len(set(tops)) == 3,
+          str(tops))
+    check("テキストのみ: テキストボックスは本文のサイズを書き込む",
+          all(re.search(r'<a:rPr[^>]* sz="', s) for s in tb))
+    check("見出しが無ければプレースホルダ 1 つのまま",
+          len(shapes(u.convert("## A\n\n本文\n\n- 項目\n", tpl, "t.pptx", sep)["pptx"])) == 1)
 
     print()
     if failures:

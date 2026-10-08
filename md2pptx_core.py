@@ -130,6 +130,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "para_space_after": 6,   # pt
         "line_ratio": 1.38,
         # 箇条書きのインデント（inch）。既定の null はテンプレートの設定を継承
+        # （自前の textbox にも本文プレースホルダと同じぶら下げを写す）
         "list_indent": None,
         "list_hanging": None,
     },
@@ -141,6 +142,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "page_number": True,
         "page_number_skip_first": True,
         "section_slides": True,           # H1 で章扉を作る
+        # true で見出し（### / ####）を本文とは別の図形にする。テキストだけの
+        # スライドでは最初の本文だけを本文プレースホルダに入れる。
+        "separate_headings": False,
         "notes_marker": "notes",          # <!-- notes: ... --> をスピーカーノートに
         "table_header_repeat": True,      # 表を分割したらヘッダを繰り返す
         # 校正言語（PowerPoint の「校閲 > 言語 > 校正言語の設定」）。
@@ -813,6 +817,46 @@ def default_text_size(prs, level: int = 1) -> float | None:
     return _defrpr_size(prs._element.find(qn("p:defaultTextStyle")), level)
 
 
+def _lvl_indent(el, level: int) -> tuple[int, int] | None:
+    """<...><a:lvl{level}pPr marL=".." indent=".."> を EMU の (marL, indent) で返す。"""
+    if el is None:
+        return None
+    lvl = el.find(qn(f"a:lvl{level}pPr"))
+    if lvl is None:
+        return None
+    mar, ind = lvl.get("marL"), lvl.get("indent")
+    if mar is None and ind is None:
+        return None
+    return int(mar or 0), int(ind or 0)
+
+
+def placeholder_indent(layout, idx: int, level: int = 1) -> tuple[int, int] | None:
+    """レイアウトのプレースホルダが持つ <a:lstStyle> の字下げ。"""
+    if layout is None:
+        return None
+    for ph in layout.placeholders:
+        if ph.placeholder_format.idx != idx:
+            continue
+        body = ph._element.find(qn("p:txBody"))
+        return _lvl_indent(None if body is None else body.find(qn("a:lstStyle")), level)
+    return None
+
+
+def master_style_indent(master, style: str, level: int = 1) -> tuple[int, int] | None:
+    """スライドマスターの <p:txStyles><p:{title|body|other}Style> の字下げ。"""
+    if master is None:
+        return None
+    styles = master._element.find(qn("p:txStyles"))
+    return _lvl_indent(None if styles is None else styles.find(qn(f"p:{style}")), level)
+
+
+# テンプレートから字下げが読めなかったときのフォールバック（EMU）。
+# PowerPoint でテキストボックスに箇条書きを付けたときの値に合わせる。
+FALLBACK_LIST_MARL = 285750
+FALLBACK_LIST_STEP = 457200
+FALLBACK_LIST_HANG = -285750
+
+
 # テンプレートに対応する書式スロットが無いキーは、そのコンテキストの本文
 # サイズ（lvl1）を基準に、既定値が持っていた比率で算出して書き込む。既定値は
 # 暗黙に「基準 18pt」で調律されていたので、基準が 18 のコンテキスト（素の
@@ -968,6 +1012,8 @@ class Painter:
         self.f = {k: opt_str(v) for k, v in cfg["fonts"].items()}
         # 色も同じ。null の項目は塗らないので、テンプレートの配色が残る。
         self.c = {k: opt_str(v) for k, v in cfg["colors"].items()}
+        # 箇条書きレベル → テンプレートの (marL, indent)。Renderer が差し込む。
+        self.template_indent = None
 
     def style_run(self, run, *, size: float | None, bold=False, italic=False,
                   color: str | None = None, mono=False, strike=False,
@@ -1021,11 +1067,32 @@ class Painter:
                 link=r.link,
             )
 
-    def indent(self, para, level: int, hanging: bool) -> None:
-        """marL / indent を明示指定する（テンプレート依存の字下げブレを防ぐ）。"""
+    def indent(self, para, level: int, hanging: bool, ctx: str = "placeholder") -> None:
+        """marL / indent を明示指定する（テンプレート依存の字下げブレを防ぐ）。
+
+        list_indent が null ならテンプレートに任せる。ただし自前の textbox
+        （ctx="shape"）の継承元 otherStyle は箇条書き用のぶら下げを持たないので、
+        箇条書きの段落には本文スタイルの字下げを写す。
+        """
         sp = self.cfg["spacing"]
         step, hang = sp.get("list_indent"), sp.get("list_hanging")
         if step is None:
+            if self.template_indent is None:
+                return
+            if hanging and ctx == "shape":
+                mar, ind = self.template_indent(level)
+            elif not hanging and ctx == "placeholder":
+                # 本文プレースホルダは箇条書き用のぶら下げを持つことが多い。記号の
+                # ない段落では 2 行目以降だけ字下げされるので、1 行目に揃える。
+                mar, ind = self.template_indent(0)
+                if ind >= 0:
+                    return
+                mar, ind = max(0, mar + ind), 0
+            else:
+                return
+            pPr = para._p.get_or_add_pPr()
+            pPr.set("marL", str(mar))
+            pPr.set("indent", str(ind))
             return
         pPr = para._p.get_or_add_pPr()
         if hanging:
@@ -1068,6 +1135,29 @@ class Painter:
 
 BULLET_CHARS = ["•", "–", "‣", "·", "·"]
 
+# 1 つのテキストフレームにまとめて流せるブロック
+TEXT_BLOCKS = (Heading, Para, ListBlock)
+
+
+def segments(blocks: Sequence[Block], split_headings: bool) -> list[list[Block]]:
+    """図形 1 個ぶんずつに区切る。
+
+    連続する見出し・段落・リストは 1 つにまとめる。split_headings なら見出しは
+    単独にする。それ以外（表・画像など）は 1 ブロックずつ。
+    """
+    out: list[list[Block]] = []
+    for blk in blocks:
+        prev = out[-1] if out else None
+        join = (prev is not None and isinstance(blk, TEXT_BLOCKS)
+                and isinstance(prev[0], TEXT_BLOCKS)
+                and not (split_headings and (isinstance(blk, Heading)
+                                             or isinstance(prev[-1], Heading))))
+        if join:
+            prev.append(blk)
+        else:
+            out.append([blk])
+    return out
+
 
 class Renderer:
     def __init__(self, cfg: dict, base_dir: Path, config_dir: Path | None = None):
@@ -1085,6 +1175,8 @@ class Renderer:
         self.slide_w_pt = self.prs.slide_width / EMU_PER_PT
         self.slide_h_pt = self.prs.slide_height / EMU_PER_PT
         self.sizes = SizeBook(cfg, self.prs, self.layout, self.warnings.append)
+        self._indent_cache: dict[int, tuple[int, int]] = {}
+        self.paint.template_indent = self.template_list_indent
         # 画像の解決結果（パスとピクセル寸法）。measure が何度も呼ぶのでキャッシュする。
         self._image_cache: dict[str, tuple[Path | None, tuple[int, int] | None]] = {}
         # title の解釈結果。警告を 1 回だけ出すためにもキャッシュが要る。
@@ -1119,6 +1211,22 @@ class Renderer:
             return self.layouts[name]
         self.warnings.append(f"レイアウト '{name}'（{key}）が見つからないため既定を使用します")
         return self.prs.slide_layouts[0]
+
+    def template_list_indent(self, level: int) -> tuple[int, int]:
+        """箇条書きレベル（0 始まり）のテンプレート上の (marL, indent)（EMU）。
+
+        本文プレースホルダと同じ字下げにする。レイアウトの本文 ph の
+        lstStyle → マスターの bodyStyle の順に引く。
+        """
+        level = min(level, 4)
+        if level not in self._indent_cache:
+            layout = self.layout("content")
+            lvl = level + 1
+            found = (placeholder_indent(layout, self.cfg["placeholders"]["body"], lvl)
+                     or master_style_indent(layout.slide_master, "bodyStyle", lvl))
+            self._indent_cache[level] = found or (
+                FALLBACK_LIST_MARL + FALLBACK_LIST_STEP * level, FALLBACK_LIST_HANG)
+        return self._indent_cache[level]
 
     def add_slide(self, key: str):
         return self.prs.slides.add_slide(self.layout(key))
@@ -1206,7 +1314,10 @@ class Renderer:
             total = 0.0
             for it in blk.items:
                 size = size_of("body", it.level)
-                indent = 18 * (it.level + 1)
+                if sp.get("list_indent") is None and ctx == "shape":
+                    indent = self.template_list_indent(it.level)[0] / EMU_PER_PT
+                else:
+                    indent = 18 * (it.level + 1)
                 total += wrapped_lines(runs_text(it.runs), size, width_pt - indent) * size * lr
                 total += sp["para_space_after"] * 0.6
             return total
@@ -1462,8 +1573,16 @@ class Renderer:
             for piece in pieces:
                 h = self.measure(piece, width, scale, ctx)
                 if cur and used + gap + h > height:
+                    # 見出しはページ末尾に残さず、続く本文と一緒に次へ送る。
+                    carry: list[Block] = []
+                    while len(cur) > 1 and isinstance(cur[-1], Heading):
+                        carry.insert(0, cur.pop())
+                    used = sum(self.measure(b, width, scale, ctx) + gap for b in carry)
+                    if used + h > height:     # 送ると次のページがあふれる
+                        cur += carry
+                        carry, used = [], 0.0
                     chunks.append((cur, scale))
-                    cur, used = [], 0.0
+                    cur = carry
                 cur.append(piece)
                 used += h + gap
         if cur:
@@ -1515,9 +1634,13 @@ class Renderer:
             left, top, width, height = self.content_rect_pt()
             self.flow_blocks(slide, blocks, left, top, width, height, scale)
             return slide
-        tf = body.text_frame
-        tf.word_wrap = True
-        self.fill_text_frame(tf, blocks, scale, ctx="placeholder")
+        if (self.cfg["options"].get("separate_headings", False)
+                and any(isinstance(b, Heading) for b in blocks)):
+            self.flow_text_slide(slide, body, blocks, scale)
+        else:
+            tf = body.text_frame
+            tf.word_wrap = True
+            self.fill_text_frame(tf, blocks, scale, ctx="placeholder")
         self.clear_empty_placeholders(
             slide, {self.cfg["placeholders"]["title"], self.cfg["placeholders"]["body"]})
         return slide
@@ -1534,12 +1657,21 @@ class Renderer:
     # --- テキストフレームへの流し込み ---
 
     def fill_text_frame(self, tf, blocks: Sequence[Block], scale: float,
-                        first_para=None, ctx: str = "shape") -> None:
+                        first_para=None, ctx: str = "shape",
+                        body_like: bool = False) -> None:
+        """body_like は本文プレースホルダに見た目を揃えた textbox 用。
+
+        textbox は otherStyle を継承するので、本文プレースホルダの実効サイズを
+        明示的に書き込む（箇条書きの字下げは ctx="shape" の経路で本文スタイルを写す）。
+        """
         p = self.cfg
         lay = "content" if ctx == "placeholder" else "table"
         started = False
 
         def size_of(key, level=0):
+            if body_like:
+                return self.sizes.metric(key, level=level, ctx="placeholder",
+                                         layout_key="content", scale=scale)
             return self.sizes.write(key, level=level, ctx=ctx,
                                     layout_key=lay, scale=scale)
 
@@ -1557,7 +1689,7 @@ class Renderer:
                 self.paint.fill_runs(para, blk.runs, size=size,
                                      color=self.c["accent"], base_bold=True)
                 self.paint.no_bullet(para)
-                self.paint.indent(para, 0, hanging=False)
+                self.paint.indent(para, 0, hanging=False, ctx=ctx)
                 para.space_before = Pt(8 if started else 0)
                 para.space_after = Pt(3)
             elif isinstance(blk, Para):
@@ -1565,7 +1697,7 @@ class Renderer:
                 self.paint.fill_runs(para, blk.runs, size=size_of("paragraph"),
                                      color=self.c["text"])
                 self.paint.no_bullet(para)
-                self.paint.indent(para, 0, hanging=False)
+                self.paint.indent(para, 0, hanging=False, ctx=ctx)
                 para.space_after = Pt(p["spacing"]["para_space_after"])
             elif isinstance(blk, ListBlock):
                 for it in blk.items:
@@ -1578,7 +1710,7 @@ class Renderer:
                         self.paint.auto_number(para)
                     else:
                         self.paint.bullet_char(para, BULLET_CHARS[min(it.level, 4)])
-                    self.paint.indent(para, it.level, hanging=True)
+                    self.paint.indent(para, it.level, hanging=True, ctx=ctx)
                     para.space_after = Pt(p["spacing"]["para_space_after"] * 0.6)
             elif isinstance(blk, Quote):
                 for sub in blk.blocks:
@@ -1588,7 +1720,7 @@ class Renderer:
                                          color=self.c["quote_text"],
                                          base_italic=p["quote"]["italic"])
                     self.paint.no_bullet(para)
-                    self.paint.indent(para, 0, hanging=False)
+                    self.paint.indent(para, 0, hanging=False, ctx=ctx)
                     para.space_after = Pt(p["spacing"]["para_space_after"])
 
     # --- 手動フロー ---
@@ -1597,11 +1729,56 @@ class Renderer:
                     width: float, height: float, scale: float) -> None:
         y = top
         gap = self.cfg["spacing"]["block_gap"]
-        for blk in blocks:
+        split = self.cfg["options"].get("separate_headings", False)
+        for seg in segments(blocks, split):
             # 手動フローで描く図形は常にテンプレートの既定テキスト書式を継承する。
-            h = self.measure(blk, width, scale, "shape")
-            self.draw_block(slide, blk, left, y, width, h, scale)
+            h = sum(self.measure(b, width, scale, "shape") for b in seg)
+            if isinstance(seg[0], TEXT_BLOCKS):
+                box = self.textbox(slide, left, y, width, h)
+                self.fill_text_frame(box.text_frame, seg, scale)
+            else:
+                self.draw_block(slide, seg[0], left, y, width, h, scale)
             y += h + gap
+
+    def flow_text_slide(self, slide, body, blocks: Sequence[Block], scale: float) -> None:
+        """separate_headings 用。見出しと本文を別の図形にして上から積む。
+
+        最初の本文のかたまりは本文プレースホルダに入れ（位置を詰め直す）、
+        見出しと 2 つ目以降の本文は本文プレースホルダに見た目を揃えた textbox にする。
+        """
+        left, top, width, _ = self.content_rect_pt()
+        gap = self.cfg["spacing"]["block_gap"]
+        lIns, tIns, rIns, bIns = self.body_insets()
+        y = top
+        for seg in segments(blocks, True):
+            h = sum(self.measure(b, width, scale, "placeholder") for b in seg)
+            h += (tIns + bIns) / EMU_PER_PT
+            if body is not None and not isinstance(seg[0], Heading):
+                body.left, body.top = Pt(left), Pt(y)
+                body.width, body.height = Pt(width), Pt(h)
+                tf = body.text_frame
+                tf.word_wrap = True
+                self.fill_text_frame(tf, seg, scale, ctx="placeholder")
+                body = None
+            else:
+                box = self.textbox(slide, left, y, width, h)
+                tf = box.text_frame
+                tf.margin_left, tf.margin_top = Emu(lIns), Emu(tIns)
+                tf.margin_right, tf.margin_bottom = Emu(rIns), Emu(bIns)
+                self.fill_text_frame(tf, seg, scale, body_like=True)
+            y += h + gap
+
+    def body_insets(self) -> tuple[int, int, int, int]:
+        """本文プレースホルダの内側余白（EMU）。無ければ OOXML の既定値。"""
+        ins = {"lIns": 91440, "tIns": 45720, "rIns": 91440, "bIns": 45720}
+        ph = self._layout_placeholder("content", self.cfg["placeholders"]["body"])
+        body = None if ph is None else ph._element.find(qn("p:txBody"))
+        pr = None if body is None else body.find(qn("a:bodyPr"))
+        if pr is not None:
+            for k in ins:
+                if pr.get(k) is not None:
+                    ins[k] = int(pr.get(k))
+        return ins["lIns"], ins["tIns"], ins["rIns"], ins["bIns"]
 
     def draw_block(self, slide, blk: Block, x: float, y: float,
                    w: float, h: float, scale: float) -> None:

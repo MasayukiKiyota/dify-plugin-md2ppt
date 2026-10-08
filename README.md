@@ -1,7 +1,7 @@
 # Markdown to PowerPoint
 
 **Author:** masayukikiyota
-**Version:** 0.2.0
+**Version:** 0.2.1
 **Type:** Tool
 
 Markdown を、既存の PowerPoint テンプレート（`.pptx` / `.potx`）のレイアウト・テーマ配色・
@@ -164,7 +164,7 @@ placeholders:
 | front matter (`title` / `subtitle` / `author` / `date`) | 表紙スライド |
 | `#` | **章扉スライド**（`options.section_slides: false` で無効化） |
 | `##` | **新規スライド**（タイトルになる） |
-| `###` / `####` | スライド内の小見出し（アクセント色・太字） |
+| `###` / `####` | スライド内の小見出し（アクセント色・太字）。`options.separate_headings: true` で本文と別の図形に |
 | 段落 | 本文テキスト |
 | `-` / `*` リスト | 箇条書き（ネスト 5 階層まで、レベル別フォントサイズ） |
 | `1.` リスト | 番号付きリスト（PowerPoint の自動採番） |
@@ -246,13 +246,14 @@ image:
   align: center              # center / left / right。画像の title で上書きできる
 spacing:
   line_ratio: 1.38           # 大きくすると早めに分割される
-  list_indent: 0.3           # 既定は null（テンプレートのインデントを継承）
+  list_indent: 0.3           # 既定は null（テンプレート本文の字下げ。表などと同じスライドでも同じ）
 options:
   language: auto             # テンプレートの校正言語を複写。"ja-JP" で固定、null で書かない
   no_proof: true             # スペルチェックと文章校正を行わない
   auto_split: true
   shrink_steps: 2            # 分割前に何段階フォントを縮めるか（1 段 = 8%）
   section_slides: true       # false にすると H1 も通常スライドに
+  separate_headings: false   # true で ### / #### の見出しを本文と別の図形にする
   page_number: true
 ```
 
